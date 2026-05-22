@@ -2,6 +2,12 @@ package me.almana.logisticsnetworks.client.screen;
 
 import me.almana.logisticsnetworks.Config;
 import me.almana.logisticsnetworks.ClientConfig;
+import me.almana.logisticsnetworks.client.GuiGraphics;
+import me.almana.logisticsnetworks.client.DefaultNodeVisibilitySync;
+import me.almana.logisticsnetworks.client.theme.Theme;
+import me.almana.logisticsnetworks.client.theme.ThemePaint;
+import me.almana.logisticsnetworks.client.theme.ThemeState;
+import me.almana.logisticsnetworks.client.theme.Themes;
 import me.almana.logisticsnetworks.upgrade.UpgradeLimitsConfig;
 import me.almana.logisticsnetworks.upgrade.UpgradeLimitsConfig.TierLimits;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -64,6 +70,8 @@ public class ModConfigScreen extends Screen {
 
     private static final Component TEXT_MAX_RENDERED = Component.translatable("gui.logisticsnetworks.config.client.maxRenderedNodes");
     private static final Component TEXT_MAX_VISIBLE = Component.translatable("gui.logisticsnetworks.config.client.maxVisibleNodes");
+    private static final Component TEXT_DEFAULT_NODE_VISIBILITY = Component.translatable("gui.logisticsnetworks.config.client.defaultNodeVisibility");
+    private static final Component TEXT_CONNECTED_NODE_TEXTURES = Component.translatable("gui.logisticsnetworks.config.client.connectedNodeTextures");
 
     private static final Component[] TIER_LABELS = {
         Component.translatable("gui.logisticsnetworks.config.upgrades.tier.none"),
@@ -102,8 +110,11 @@ public class ModConfigScreen extends Screen {
 
     private int pendingMaxRenderedNodes;
     private int pendingMaxVisibleNodes;
+    private boolean pendingDefaultNodeVisibility;
+    private boolean pendingConnectedNodeTextures;
     private EditBox maxRenderedNodesBox;
     private EditBox maxVisibleNodesBox;
+    private String pendingTheme;
 
     private TierLimits[] pendingTiers;
     private int expandedTier = -1;
@@ -111,6 +122,8 @@ public class ModConfigScreen extends Screen {
 
     private String editStartValue = "";
     private boolean canEditServerConfig;
+    private boolean saved;
+    private boolean discarding;
 
     public ModConfigScreen(Screen parent) {
         super(Component.translatable("gui.logisticsnetworks.config.title"));
@@ -133,8 +146,11 @@ public class ModConfigScreen extends Screen {
         pendingBackoffChemical = Config.backoffChemicalSpec.get();
         pendingBackoffSource = Config.backoffSourceSpec.get();
         pendingBackoffMaxTicks = Config.backoffMaxTicksSpec.get();
+        pendingDefaultNodeVisibility = ClientConfig.defaultNodeVisibilitySpec.get();
         pendingMaxRenderedNodes = ClientConfig.maxRenderedNodesSpec.get();
         pendingMaxVisibleNodes = ClientConfig.maxVisibleNodesSpec.get();
+        pendingConnectedNodeTextures = ClientConfig.connectedNodeTexturesSpec.get();
+        pendingTheme = ClientConfig.themeSpec.get();
         pendingTiers = UpgradeLimitsConfig.getAll();
 
         buildTab();
@@ -182,14 +198,14 @@ public class ModConfigScreen extends Screen {
     }
 
     private void buildClientTab(int cx, int cy, int cw) {
-        maxRenderedNodesBox = new EditBox(font, cx + 150, cy + 4, 80, 14, Component.empty());
+        maxRenderedNodesBox = new EditBox(font, cx + 150, cy + 24, 80, 14, Component.empty());
         maxRenderedNodesBox.setMaxLength(10);
         maxRenderedNodesBox.setFilter(s -> s.isEmpty() || s.chars().allMatch(Character::isDigit));
         maxRenderedNodesBox.setValue(String.valueOf(pendingMaxRenderedNodes));
         maxRenderedNodesBox.setBordered(false);
         addWidget(maxRenderedNodesBox);
 
-        maxVisibleNodesBox = new EditBox(font, cx + 150, cy + 24, 80, 14, Component.empty());
+        maxVisibleNodesBox = new EditBox(font, cx + 150, cy + 44, 80, 14, Component.empty());
         maxVisibleNodesBox.setMaxLength(10);
         maxVisibleNodesBox.setFilter(s -> s.isEmpty() || s.chars().allMatch(Character::isDigit));
         maxVisibleNodesBox.setValue(String.valueOf(pendingMaxVisibleNodes));
@@ -340,11 +356,72 @@ public class ModConfigScreen extends Screen {
     }
 
     private void renderClientTab(GuiGraphicsExtractor g, int cx, int cy, int cw, int mx, int my) {
-        g.text(font, TEXT_MAX_RENDERED, cx, cy + 7, COL_INK, false);
-        renderUnderline(g, cx + 150, cy + 4 + 14, 80);
+        renderCheckbox(g, cx, cy, cw, TEXT_DEFAULT_NODE_VISIBILITY, pendingDefaultNodeVisibility, mx, my, false);
 
-        g.text(font, TEXT_MAX_VISIBLE, cx, cy + 27, COL_INK, false);
+        g.text(font, TEXT_MAX_RENDERED, cx, cy + 27, COL_INK, false);
         renderUnderline(g, cx + 150, cy + 24 + 14, 80);
+
+        g.text(font, TEXT_MAX_VISIBLE, cx, cy + 47, COL_INK, false);
+        renderUnderline(g, cx + 150, cy + 44 + 14, 80);
+
+        renderCheckbox(g, cx, cy + 64, cw, TEXT_CONNECTED_NODE_TEXTURES, pendingConnectedNodeTextures, mx, my, false);
+
+        int themeY = cy + 88;
+        g.text(font, Component.translatable("gui.logisticsnetworks.config.client.theme"), cx, themeY, COL_INK, false);
+
+        int cols = 4;
+        int swatchGap = 4;
+        int swatchW = (cw - (cols - 1) * swatchGap) / cols;
+        int swatchH = 22;
+        int startY = themeY + 12;
+        GuiGraphics graphics = new GuiGraphics(g);
+        Theme frame = ThemeState.active();
+        for (int i = 0; i < Themes.ALL.size(); i++) {
+            Theme preview = Themes.ALL.get(i);
+            int col = i % cols;
+            int row = i / cols;
+            int sx = cx + col * (swatchW + swatchGap);
+            int sy = startY + row * (swatchH + swatchGap);
+            boolean active = preview.id().equals(pendingTheme);
+            boolean hovered = mx >= sx && mx <= sx + swatchW && my >= sy && my <= sy + swatchH;
+            ThemePaint.swatchPreview(graphics, sx, sy, swatchW, 12, preview, frame);
+            int fg = active ? 0xFF000000 : (hovered ? COL_INK : COL_INK_FADED);
+            ThemePaint.drawCentered(graphics, font, preview.label(), sx + swatchW / 2, sy + 13, fg);
+            if (active) {
+                g.outline(sx - 1, sy - 1, swatchW + 2, swatchH + 2, COL_BORDER);
+            }
+        }
+    }
+
+    private boolean handleClientClick(double mouseX, double mouseY, int cx, int cy, int cw) {
+        int boxX = cx + cw - 14;
+        int boxSize = 9;
+        if (inBox(mouseX, mouseY, boxX, cy + 2, boxSize)) {
+            pendingDefaultNodeVisibility = !pendingDefaultNodeVisibility;
+            return true;
+        }
+        if (inBox(mouseX, mouseY, boxX, cy + 66, boxSize)) {
+            pendingConnectedNodeTextures = !pendingConnectedNodeTextures;
+            return true;
+        }
+
+        int themeY = cy + 88;
+        int cols = 4;
+        int swatchGap = 4;
+        int swatchW = (cw - (cols - 1) * swatchGap) / cols;
+        int swatchH = 22;
+        int startY = themeY + 12;
+        for (int i = 0; i < Themes.ALL.size(); i++) {
+            int col = i % cols;
+            int row = i / cols;
+            int sx = cx + col * (swatchW + swatchGap);
+            int sy = startY + row * (swatchH + swatchGap);
+            if (mouseX >= sx && mouseX <= sx + swatchW && mouseY >= sy && mouseY <= sy + swatchH) {
+                pendingTheme = Themes.ALL.get(i).id();
+                return true;
+            }
+        }
+        return false;
     }
 
     private void renderUpgradesTab(GuiGraphicsExtractor g, int cx, int cy, int cw, int mx, int my) {
@@ -435,7 +512,13 @@ public class ModConfigScreen extends Screen {
                 switch (currentTab) {
                     case COMMON -> { if (handleCommonClick(mouseX, mouseY, contentX, contentY, contentW)) { unfocusEditBoxes(); return true; } }
                     case UPGRADES -> { if (handleUpgradesClick(mouseX, mouseY, contentX, contentY, contentW)) { unfocusEditBoxes(); return true; } }
+                    case CLIENT -> { }
                 }
+            }
+
+            if (currentTab == Tab.CLIENT && handleClientClick(mouseX, mouseY, contentX, contentY, contentW)) {
+                unfocusEditBoxes();
+                return true;
             }
         }
 
@@ -547,7 +630,9 @@ public class ModConfigScreen extends Screen {
         pendingTiers[expandedTier] = new TierLimits(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]);
     }
 
-    private void save() {
+    private void saveChanges() {
+        if (saved) return;
+        saved = true;
         stashCurrentTab();
 
         if (canEditServerConfig) {
@@ -577,16 +662,39 @@ public class ModConfigScreen extends Screen {
             Config.SPEC.save();
         }
 
+        ClientConfig.defaultNodeVisibilitySpec.set(pendingDefaultNodeVisibility);
         ClientConfig.maxRenderedNodesSpec.set(pendingMaxRenderedNodes);
         ClientConfig.maxVisibleNodesSpec.set(pendingMaxVisibleNodes);
+        ClientConfig.connectedNodeTexturesSpec.set(pendingConnectedNodeTextures);
+        ClientConfig.themeSpec.set(pendingTheme);
         ClientConfig.refresh();
+        DefaultNodeVisibilitySync.send();
+        ThemeState.setTheme(Themes.byId(pendingTheme));
         ClientConfig.SPEC.save();
+    }
+
+    private void save() {
+        saveChanges();
 
         minecraft.setScreen(parent);
     }
 
     private void cancel() {
+        discarding = true;
         minecraft.setScreen(parent);
+    }
+
+    @Override
+    public void onClose() {
+        save();
+    }
+
+    @Override
+    public void removed() {
+        if (!saved && !discarding) {
+            saveChanges();
+        }
+        super.removed();
     }
 
     private int parseIntOr(String s, int fallback) {
@@ -619,7 +727,7 @@ public class ModConfigScreen extends Screen {
             return focused.keyPressed(event);
         }
         if (keyCode == 256) {
-            cancel();
+            save();
             return true;
         }
         return super.keyPressed(event);

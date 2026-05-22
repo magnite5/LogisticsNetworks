@@ -8,8 +8,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtOps;
-import net.minecraft.nbt.NumericTag;
-import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.RegistryOps;
@@ -53,12 +51,6 @@ public final class FilterItemData {
     private static final String KEY_RULE_V = "v";
     private static final int MAX_NBT_RULES_PER_SLOT = 6;
     private static final String NBT_OP_EQUALS = "=";
-    private static final String NBT_OP_NOT_EQUALS = "!=";
-    private static final String NBT_OP_GT = ">";
-    private static final String NBT_OP_LT = "<";
-    private static final String NBT_OP_GTE = ">=";
-    private static final String NBT_OP_LTE = "<=";
-    private static final String[] NBT_OPS = { "=", "!=", ">", "<", ">=", "<=" };
 
     public static final class ReadCache {
         private final IdentityHashMap<ItemStack, ItemFilterView> itemViews = new IdentityHashMap<>();
@@ -70,6 +62,8 @@ public final class FilterItemData {
     private record ItemFilterSlot(
             @Nullable String tag,
             @Nullable Item item,
+            @Nullable String chemicalId,
+            @Nullable FluidStack fluidEntry,
             int batch,
             int stock,
             @Nullable String nbtPath,
@@ -323,6 +317,14 @@ public final class FilterItemData {
         return hasEntryType(stack, KEY_FLUID_ID);
     }
 
+    public static boolean hasAnyFluidEntries(ItemStack stack, @Nullable ReadCache readCache) {
+        if (!isFilterItem(stack))
+            return false;
+        if (readCache == null)
+            return hasEntryType(stack, KEY_FLUID_ID);
+        return getItemFilterView(stack, readCache).hasFluidEntries();
+    }
+
     private static boolean hasEntryType(ItemStack stack, String key) {
         if (!isFilterItem(stack))
             return false;
@@ -471,6 +473,14 @@ public final class FilterItemData {
         return hasEntryType(stack, KEY_CHEMICAL_ID);
     }
 
+    public static boolean hasAnyChemicalEntries(ItemStack stack, @Nullable ReadCache readCache) {
+        if (!isFilterItem(stack))
+            return false;
+        if (readCache == null)
+            return hasEntryType(stack, KEY_CHEMICAL_ID);
+        return getItemFilterView(stack, readCache).hasChemicalEntries();
+    }
+
     // ── Tag per-slot methods ──
 
     @Nullable
@@ -535,6 +545,14 @@ public final class FilterItemData {
 
     public static boolean hasAnyTagEntries(ItemStack stack) {
         return hasEntryType(stack, KEY_TAG);
+    }
+
+    public static boolean hasAnyTagEntries(ItemStack stack, @Nullable ReadCache readCache) {
+        if (!isFilterItem(stack))
+            return false;
+        if (readCache == null)
+            return hasEntryType(stack, KEY_TAG);
+        return getItemFilterView(stack, readCache).hasTagEntries();
     }
 
     public static boolean hasAnyAmountEntries(ItemStack stack, @Nullable ReadCache readCache) {
@@ -805,7 +823,7 @@ public final class FilterItemData {
         if (slot < 0 || slot >= getCapacity(stack))
             return;
 
-        String normalizedOperator = normalizeNbtOperator(operator);
+        String normalizedOperator = NbtRuleMatcher.normalizeOperator(operator);
 
         updateRoot(stack, root -> {
             ListTag list = getItemEntries(root);
@@ -944,7 +962,7 @@ public final class FilterItemData {
         if (slot < 0 || slot >= getCapacity(stack))
             return false;
 
-        String op = normalizeNbtOperator(operator);
+        String op = NbtRuleMatcher.normalizeOperator(operator);
         boolean[] result = { false };
 
         updateRoot(stack, root -> {
@@ -1112,7 +1130,7 @@ public final class FilterItemData {
                     String o = r.contains(KEY_RULE_O) ? r.getStringOr(KEY_RULE_O, NBT_OP_EQUALS) : NBT_OP_EQUALS;
                     Tag v = r.get(KEY_RULE_V);
                     if (!p.isEmpty() && v != null) {
-                        result.add(new SlotNbtRule(p, normalizeNbtOperator(o), v.copy()));
+                        result.add(new SlotNbtRule(p, NbtRuleMatcher.normalizeOperator(o), v.copy()));
                     }
                 }
             }
@@ -1123,7 +1141,7 @@ public final class FilterItemData {
         Tag value = getEntryNbtValue(entry);
         if (path != null && value != null) {
             String op = getEntryNbtOperator(entry);
-            return List.of(new SlotNbtRule(path, normalizeNbtOperator(op), value.copy()));
+            return List.of(new SlotNbtRule(path, NbtRuleMatcher.normalizeOperator(op), value.copy()));
         }
 
         return List.of();
@@ -1145,7 +1163,7 @@ public final class FilterItemData {
             ListTag rules = new ListTag();
             CompoundTag rule = new CompoundTag();
             rule.putString(KEY_RULE_P, path);
-            rule.putString(KEY_RULE_O, normalizeNbtOperator(op));
+            rule.putString(KEY_RULE_O, NbtRuleMatcher.normalizeOperator(op));
             rule.put(KEY_RULE_V, value.copy());
             rules.add(rule);
             entry.put(KEY_NBT_RULES, rules);
@@ -1365,12 +1383,22 @@ public final class FilterItemData {
     }
 
     public static boolean containsFluidFull(ItemStack filter, FluidStack candidate, HolderLookup.Provider provider) {
+        return containsFluidFull(filter, candidate, provider, null);
+    }
+
+    public static boolean containsFluidFull(ItemStack filter, FluidStack candidate, HolderLookup.Provider provider,
+            @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || candidate.isEmpty())
             return false;
 
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        CompoundTag candidateComponents = null;
+        boolean candidateComponentsResolved = false;
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+
+            String tag = slot.tag();
             if (tag != null) {
                 if (candidate.typeHolder().tags().map(t -> t.location().toString()).anyMatch(tag::equals)) {
                     return true;
@@ -1378,10 +1406,16 @@ public final class FilterItemData {
                 continue;
             }
 
-            FluidStack entry = getFluidEntry(filter, i);
-            if (!entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate)) {
-                if (!checkNbtConstraint(filter, i, NbtFilterData.getSerializedComponents(candidate, provider)))
-                    continue;
+            FluidStack entry = slot.fluidEntry();
+            if (entry != null && !entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate)) {
+                if (slot.hasNbt()) {
+                    if (!candidateComponentsResolved) {
+                        candidateComponents = NbtFilterData.getSerializedComponents(candidate, provider);
+                        candidateComponentsResolved = true;
+                    }
+                    if (!checkNbtConstraint(slot, candidateComponents))
+                        continue;
+                }
                 return true;
             }
         }
@@ -1389,20 +1423,25 @@ public final class FilterItemData {
     }
 
     public static boolean containsChemicalFull(ItemStack filter, String chemicalId) {
+        return containsChemicalFull(filter, chemicalId, null);
+    }
+
+    public static boolean containsChemicalFull(ItemStack filter, String chemicalId, @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || chemicalId == null || chemicalId.isEmpty())
             return false;
 
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+            String tag = slot.tag();
             if (tag != null) {
                 if (MekanismCompat.chemicalHasTag(chemicalId, tag))
                     return true;
                 continue;
             }
-
-            String entry = getChemicalEntry(filter, i);
-            if (entry != null && entry.equals(chemicalId))
+            String entryId = slot.chemicalId();
+            if (entryId != null && entryId.equals(chemicalId))
                 return true;
         }
         return false;
@@ -1522,77 +1561,105 @@ public final class FilterItemData {
 
     public static int getFluidAmountThresholdFull(ItemStack filter, FluidStack candidate,
             HolderLookup.Provider provider) {
+        return getFluidAmountThresholdFull(filter, candidate, provider, null);
+    }
+
+    public static int getFluidAmountThresholdFull(ItemStack filter, FluidStack candidate,
+            HolderLookup.Provider provider, @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || candidate.isEmpty())
             return 0;
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+            String tag = slot.tag();
             if (tag != null) {
                 if (candidate.typeHolder().tags().map(t -> t.location().toString()).anyMatch(tag::equals))
-                    return getEntryAmount(filter, i);
+                    return slot.stock();
                 continue;
             }
 
-            FluidStack entry = getFluidEntry(filter, i);
-            if (!entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate))
-                return getEntryAmount(filter, i);
+            FluidStack entry = slot.fluidEntry();
+            if (entry != null && !entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate))
+                return slot.stock();
         }
         return 0;
     }
 
     public static int getChemicalAmountThresholdFull(ItemStack filter, String chemicalId) {
+        return getChemicalAmountThresholdFull(filter, chemicalId, null);
+    }
+
+    public static int getChemicalAmountThresholdFull(ItemStack filter, String chemicalId,
+            @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || chemicalId == null || chemicalId.isEmpty())
             return 0;
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+            String tag = slot.tag();
             if (tag != null) {
                 if (MekanismCompat.chemicalHasTag(chemicalId, tag))
-                    return getEntryAmount(filter, i);
+                    return slot.stock();
                 continue;
             }
 
-            String entry = getChemicalEntry(filter, i);
-            if (entry != null && entry.equals(chemicalId))
-                return getEntryAmount(filter, i);
+            String entryId = slot.chemicalId();
+            if (entryId != null && entryId.equals(chemicalId))
+                return slot.stock();
         }
         return 0;
     }
 
     public static int getFluidBatchLimitFull(ItemStack filter, FluidStack candidate) {
+        return getFluidBatchLimitFull(filter, candidate, null);
+    }
+
+    public static int getFluidBatchLimitFull(ItemStack filter, FluidStack candidate,
+            @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || candidate.isEmpty())
             return 0;
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+            String tag = slot.tag();
             if (tag != null) {
                 if (candidate.typeHolder().tags().map(t -> t.location().toString()).anyMatch(tag::equals))
-                    return getEntryBatch(filter, i);
+                    return slot.batch();
                 continue;
             }
 
-            FluidStack entry = getFluidEntry(filter, i);
-            if (!entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate))
-                return getEntryBatch(filter, i);
+            FluidStack entry = slot.fluidEntry();
+            if (entry != null && !entry.isEmpty() && FluidStack.isSameFluidSameComponents(entry, candidate))
+                return slot.batch();
         }
         return 0;
     }
 
     public static int getChemicalBatchLimitFull(ItemStack filter, String chemicalId) {
+        return getChemicalBatchLimitFull(filter, chemicalId, null);
+    }
+
+    public static int getChemicalBatchLimitFull(ItemStack filter, String chemicalId,
+            @Nullable ReadCache readCache) {
         if (!isFilterItem(filter) || chemicalId == null || chemicalId.isEmpty())
             return 0;
-        int cap = getCapacity(filter);
-        for (int i = 0; i < cap; i++) {
-            String tag = getEntryTag(filter, i);
+        ItemFilterView view = getItemFilterView(filter, readCache);
+        for (ItemFilterSlot slot : view.entriesBySlot()) {
+            if (slot == null)
+                continue;
+            String tag = slot.tag();
             if (tag != null) {
                 if (MekanismCompat.chemicalHasTag(chemicalId, tag))
-                    return getEntryBatch(filter, i);
+                    return slot.batch();
                 continue;
             }
 
-            String entry = getChemicalEntry(filter, i);
-            if (entry != null && entry.equals(chemicalId))
-                return getEntryBatch(filter, i);
+            String entryId = slot.chemicalId();
+            if (entryId != null && entryId.equals(chemicalId))
+                return slot.batch();
         }
         return 0;
     }
@@ -1615,7 +1682,7 @@ public final class FilterItemData {
             boolean matchAny = entry.nbtMatchAny();
             for (SlotNbtRule rule : rules) {
                 Tag actual = NbtFilterData.resolvePathValue(components, rule.path());
-                boolean matches = matchesNbtValue(rule.operator(), rule.value(), actual);
+                boolean matches = NbtRuleMatcher.matchesValue(rule.operator(), rule.value(), actual);
                 if (matchAny && matches) return true;
                 if (!matchAny && !matches) return false;
             }
@@ -1624,7 +1691,7 @@ public final class FilterItemData {
 
         CompoundTag rawNbt = entry.rawNbt();
         if (rawNbt != null) {
-            return compoundContains(components, rawNbt);
+            return NbtRuleMatcher.compoundContains(components, rawNbt);
         }
         if (entry.invalidRawNbt()) {
             return false;
@@ -1635,7 +1702,7 @@ public final class FilterItemData {
         if (nbtPath == null || nbtExpected == null)
             return true;
         Tag actual = NbtFilterData.resolvePathValue(components, nbtPath);
-        return matchesNbtValue(entry.nbtOp(), nbtExpected, actual);
+        return NbtRuleMatcher.matchesValue(entry.nbtOp(), nbtExpected, actual);
     }
 
     private static boolean checkNbtConstraint(CompoundTag entry, @Nullable CompoundTag components) {
@@ -1649,7 +1716,7 @@ public final class FilterItemData {
             boolean matchAny = entry.getBooleanOr(KEY_NBT_MATCH_ANY, false);
             for (SlotNbtRule rule : rules) {
                 Tag actual = NbtFilterData.resolvePathValue(components, rule.path());
-                boolean matches = matchesNbtValue(rule.operator(), rule.value(), actual);
+                boolean matches = NbtRuleMatcher.matchesValue(rule.operator(), rule.value(), actual);
                 if (matchAny && matches) return true;
                 if (!matchAny && !matches) return false;
             }
@@ -1660,7 +1727,7 @@ public final class FilterItemData {
         if (raw != null) {
             try {
                 CompoundTag expected = TagParser.parseCompoundFully(raw);
-                return compoundContains(components, expected);
+                return NbtRuleMatcher.compoundContains(components, expected);
             } catch (Exception e) {
                 return false;
             }
@@ -1671,23 +1738,7 @@ public final class FilterItemData {
         if (nbtPath == null || nbtExpected == null)
             return true;
         Tag actual = NbtFilterData.resolvePathValue(components, nbtPath);
-        return matchesNbtValue(getEntryNbtOperator(entry), nbtExpected, actual);
-    }
-
-    private static boolean compoundContains(CompoundTag actual, CompoundTag expected) {
-        for (String key : expected.keySet()) {
-            Tag expectedVal = expected.get(key);
-            Tag actualVal = actual.get(key);
-            if (actualVal == null || expectedVal == null)
-                return false;
-            if (expectedVal instanceof CompoundTag ec && actualVal instanceof CompoundTag ac) {
-                if (!compoundContains(ac, ec))
-                    return false;
-            } else if (!expectedVal.equals(actualVal)) {
-                return false;
-            }
-        }
-        return true;
+        return NbtRuleMatcher.matchesValue(getEntryNbtOperator(entry), nbtExpected, actual);
     }
 
     private static boolean checkDurabilityConstraint(ItemStack filter, int slot, ItemStack candidate) {
@@ -1894,6 +1945,16 @@ public final class FilterItemData {
             Item item = resolveEntryItem(entry);
             boolean hasFluid = entry.contains(KEY_FLUID_ID);
             boolean hasChemical = entry.contains(KEY_CHEMICAL_ID);
+            String chemicalId = hasChemical ? entry.getStringOr(KEY_CHEMICAL_ID, "") : null;
+            FluidStack fluidEntry = null;
+            if (hasFluid) {
+                Identifier fluidId = Identifier.tryParse(entry.getStringOr(KEY_FLUID_ID, ""));
+                if (fluidId != null) {
+                    fluidEntry = BuiltInRegistries.FLUID.getOptional(fluidId)
+                            .map(f -> new FluidStack(f, 1000))
+                            .orElse(null);
+                }
+            }
             List<SlotNbtRule> nbtRules = readSlotNbtRules(entry);
             boolean nbtMatchAny = entry.getBooleanOr(KEY_NBT_MATCH_ANY, false);
 
@@ -1926,8 +1987,9 @@ public final class FilterItemData {
                 if (arr.length > 0) slotMapping = arr;
             }
 
-            entriesBySlot[slot] = new ItemFilterSlot(tag, item, batch, stock, nbtPath, nbtValue, nbtOp, rawNbt,
-                    invalidRawNbt, durOp, durVal, hasNbt, nbtOnly, nbtRules, nbtMatchAny, slotMapping, enchanted);
+            entriesBySlot[slot] = new ItemFilterSlot(tag, item, chemicalId, fluidEntry, batch, stock, nbtPath,
+                    nbtValue, nbtOp, rawNbt, invalidRawNbt, durOp, durVal, hasNbt, nbtOnly, nbtRules,
+                    nbtMatchAny, slotMapping, enchanted);
 
             hasItemEntries |= item != null;
             hasFluidEntries |= hasFluid;
@@ -2004,7 +2066,7 @@ public final class FilterItemData {
     private static String getEntryNbtOperator(CompoundTag entry) {
         if (!entry.contains(KEY_NBT_OP))
             return NBT_OP_EQUALS;
-        return normalizeNbtOperator(entry.getStringOr(KEY_NBT_OP, NBT_OP_EQUALS));
+        return NbtRuleMatcher.normalizeOperator(entry.getStringOr(KEY_NBT_OP, NBT_OP_EQUALS));
     }
 
     @Nullable
@@ -2048,54 +2110,8 @@ public final class FilterItemData {
                 || getEntryNbtRaw(entry) != null;
     }
 
-    private static String normalizeNbtOperator(@Nullable String operator) {
-        if (operator == null) return NBT_OP_EQUALS;
-        return switch (operator) {
-            case "!=", ">", "<", ">=", "<=" -> operator;
-            default -> NBT_OP_EQUALS;
-        };
-    }
-
     public static String nextNbtOperator(String current) {
-        for (int i = 0; i < NBT_OPS.length; i++) {
-            if (NBT_OPS[i].equals(current)) return NBT_OPS[(i + 1) % NBT_OPS.length];
-        }
-        return NBT_OPS[0];
-    }
-
-    private static boolean matchesNbtValue(@Nullable String operator, Tag expected, @Nullable Tag actual) {
-        if (actual == null) return NBT_OP_NOT_EQUALS.equals(operator);
-        String op = operator != null ? operator : NBT_OP_EQUALS;
-        return switch (op) {
-            case "!=" -> !expected.equals(actual);
-            case ">", "<", ">=", "<=" -> compareNumericNbt(op, expected, actual);
-            default -> expected.equals(actual);
-        };
-    }
-
-    private static boolean compareNumericNbt(String op, Tag expected, Tag actual) {
-        double exp = tagToDouble(expected);
-        double act = tagToDouble(actual);
-        if (Double.isNaN(exp) || Double.isNaN(act)) return false;
-        return switch (op) {
-            case ">" -> act > exp;
-            case "<" -> act < exp;
-            case ">=" -> act >= exp;
-            case "<=" -> act <= exp;
-            default -> false;
-        };
-    }
-
-    private static double tagToDouble(Tag tag) {
-        if (tag instanceof NumericTag nt) return nt.doubleValue();
-        if (tag instanceof StringTag st) {
-            try {
-                return Double.parseDouble(st.value());
-            } catch (Exception e) {
-                return Double.NaN;
-            }
-        }
-        try { return Double.parseDouble(tag.toString()); } catch (Exception e) { return Double.NaN; }
+        return NbtRuleMatcher.nextOperator(current);
     }
 
     private static boolean hasEntryDurability(CompoundTag entry) {

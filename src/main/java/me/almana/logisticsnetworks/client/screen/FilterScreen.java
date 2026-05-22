@@ -18,7 +18,6 @@ import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.components.MultiLineEditBox;
 import net.minecraft.util.Mth;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
 import net.minecraft.tags.TagKey;
 
 import me.almana.logisticsnetworks.menu.FilterMenu;
@@ -76,7 +75,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
     private static final int COL_BTN_HOVER = 0xFF3A3A3A;
     private static final int COL_BTN_BORDER = 0xFF4A4A4A;
 
-    // State
     private EditBox manualInputBox;
     private boolean isDropdownOpen = false;
     private int listScrollOffset = 0;
@@ -87,7 +85,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
     private boolean flushedTextOnClose = false;
     private boolean wasManualInputFocused = false;
 
-    // Sub-mode state
     private int tagEditSlot = -1;
     private int nbtEditSlot = -1;
     private List<String> cachedSlotTags = new ArrayList<>();
@@ -97,12 +94,10 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
     private String nbtPendingOperator = "=";
     private EditBox tagInputBox;
 
-    // NBT sub-mode state
     private int nbtListScrollOffset = 0;
     private int nbtEditingRuleIndex = -1;
     private EditBox nbtValueEditBox;
 
-    // Detail page state
     private int detailEditSlot = -1;
     private List<String> detailCachedTags = new ArrayList<>();
     private List<String> detailAllTags = new ArrayList<>();
@@ -163,12 +158,10 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
     private List<NbtRow> nbtRows = new ArrayList<>();
     private Set<String> nbtCollapsedGroups = new HashSet<>();
 
-    // Cached Data
     private List<String> cachedMods = new ArrayList<>();
     private ItemStack lastExtractorItem = ItemStack.EMPTY;
     private FilterTargetType lastTargetType = null;
 
-    // Animation
     private int textTick = 0;
     private String currentSlotExpr;
     private Component selectorGhostChemicalName = null;
@@ -444,7 +437,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
     @Override
     protected void renderLabels(GuiGraphics graphics, int mouseX, int mouseY) {
-        // Labels are rendered manually in renderBg to support custom layouts per mode.
     }
 
     private void renderStandardFilterGrid(GuiGraphics g, int mx, int my) {
@@ -564,13 +556,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
         }
     }
 
-    private String formatMb(int amount) {
-        if (amount >= 1000 && amount % 1000 == 0) {
-            return (amount / 1000) + "B";
-        }
-        return amount + "mB";
-    }
-
     private void renderModMode(GuiGraphics g, int mx, int my) {
         renderModeControls(g, mx, my, false);
         renderDropdownMode(g, mx, my, cachedMods,
@@ -614,9 +599,8 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
         int maxScroll = Math.max(0, items.size() - DROPDOWN_ROWS);
         listScrollOffset = Math.max(0, Math.min(listScrollOffset, maxScroll));
 
-        // Background
         g.pose().pushPose();
-        g.pose().translate(0, 0, 200); // Render on top
+        g.pose().translate(0, 0, 200);
         g.fill(x, y, x + w, y + listH, COL_BG);
         g.renderOutline(x, y, w, listH, COL_BORDER);
 
@@ -2243,10 +2227,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
         return (rowW - NBT_INDICATOR_W - NBT_OP_BTN_W - 4) / 2;
     }
 
-    private boolean isBooleanValue(String displayVal) {
-        return "true".equals(displayVal) || "false".equals(displayVal);
-    }
-
     private void renderNbtEntryList(GuiGraphics g, int listX, int listY, int listW, int listH,
             List<FilterItemData.SlotNbtRule> activeRules, int mx, int my) {
         int totalEntries = cachedSlotNbtEntries.size();
@@ -2294,7 +2274,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
             int valX = opX + NBT_OP_BTN_W + 1;
 
             // Path column
-            String displayPath = formatNbtPath(entry.path());
+            String displayPath = FilterScreenText.formatNbtPath(entry.path());
             g.fill(pathX, rowY, pathX + colW, rowY + LIST_ROW_H, 0xFF080808);
             g.renderOutline(pathX, rowY, colW, LIST_ROW_H, active ? COL_BTN_BORDER : 0xFF222222);
             g.drawString(font, font.plainSubstrByWidth(displayPath, colW - 4),
@@ -2310,11 +2290,11 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
             // Value column
             String displayVal = active
-                    ? formatNbtValue(activeRule.value().toString())
-                    : formatNbtValue(entry.valueDisplay());
+                    ? FilterScreenText.formatNbtValue(activeRule.value().toString())
+                    : FilterScreenText.formatNbtValue(entry.valueDisplay());
 
             g.fill(valX, rowY, valX + colW, rowY + LIST_ROW_H, 0xFF080808);
-            boolean isBool = isBooleanValue(displayVal);
+            boolean isBool = FilterScreenText.isBooleanValue(displayVal);
             g.renderOutline(valX, rowY, colW, LIST_ROW_H,
                     editing ? COL_ACCENT : (active ? COL_BTN_BORDER : 0xFF222222));
 
@@ -2454,7 +2434,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
             // Click operator button = cycle operator
             if (active && isHovering(opX, rowY, NBT_OP_BTN_W, LIST_ROW_H, (int) mx, (int) my)) {
                 commitNbtValueEditIfActive();
-                String savedVal = formatNbtValue(activeRules.get(ruleIdx).value().toString());
+                String savedVal = FilterScreenText.formatNbtValue(activeRules.get(ruleIdx).value().toString());
                 String currentOp = activeRules.get(ruleIdx).operator();
                 String newOp = FilterItemData.nextNbtOperator(currentOp);
                 ClientPacketDistributor.sendToServer(SetFilterEntryNbtPayload.remove(nbtEditSlot, ruleIdx));
@@ -2475,10 +2455,10 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
             // Click value area of active rule
             if (active && btn == 0 && mx >= valX) {
-                String displayVal = formatNbtValue(activeRules.get(ruleIdx).value().toString());
+                String displayVal = FilterScreenText.formatNbtValue(activeRules.get(ruleIdx).value().toString());
 
                 // Boolean toggle
-                if (isBooleanValue(displayVal)) {
+                if (FilterScreenText.isBooleanValue(displayVal)) {
                     commitNbtValueEditIfActive();
                     String toggled = "true".equals(displayVal) ? "false" : "true";
                     ClientPacketDistributor.sendToServer(
@@ -2517,7 +2497,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
             if (active && btn == 1) {
                 commitNbtValueEditIfActive();
-                String savedVal = formatNbtValue(activeRules.get(ruleIdx).value().toString());
+                String savedVal = FilterScreenText.formatNbtValue(activeRules.get(ruleIdx).value().toString());
                 String currentOp = activeRules.get(ruleIdx).operator();
                 String newOp = FilterItemData.nextNbtOperator(currentOp);
                 ClientPacketDistributor.sendToServer(SetFilterEntryNbtPayload.remove(nbtEditSlot, ruleIdx));
@@ -2557,54 +2537,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
                 return i;
         }
         return -1;
-    }
-
-    private static final Map<String, String> PATH_ABBREV = Map.of(
-            "enchantments", "ench",
-            "stored_enchantments", "stored",
-            "potion_contents", "potion",
-            "custom_data", "data",
-            "attribute_modifiers", "attr"
-    );
-
-    private static String stripNamespace(String s) {
-        int colon = s.indexOf(':');
-        return colon >= 0 ? s.substring(colon + 1) : s;
-    }
-
-    private String formatNbtPath(String path) {
-        String[] segments = path.split("\\.");
-        String last = null;
-        String parent = null;
-        for (String seg : segments) {
-            if (seg.equals("levels")) continue;
-            String clean = stripNamespace(seg);
-            parent = last;
-            last = clean;
-        }
-        if (parent != null && last != null) {
-            String abbr = PATH_ABBREV.getOrDefault(parent, parent);
-            return abbr + " > " + last;
-        }
-        return last != null ? last : path;
-    }
-
-    private String formatNbtValue(String raw) {
-        if (raw.length() >= 2 && raw.startsWith("\"") && raw.endsWith("\"")) {
-            String inner = raw.substring(1, raw.length() - 1);
-            inner = stripNamespace(inner);
-            return inner;
-        }
-        if (raw.endsWith("b") || raw.endsWith("s") || raw.endsWith("L")
-                || raw.endsWith("f") || raw.endsWith("d")) {
-            String num = raw.substring(0, raw.length() - 1);
-            if (raw.endsWith("b")) {
-                if ("0".equals(num)) return "false";
-                if ("1".equals(num)) return "true";
-            }
-            return num;
-        }
-        return raw;
     }
 
     private int getNbtSubModeMaxScroll() {
@@ -3286,7 +3218,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
                 if (!hoverRules.isEmpty()) {
                     List<Component> tipLines = new ArrayList<>();
                     for (FilterItemData.SlotNbtRule r : hoverRules) {
-                        tipLines.add(Component.literal(abbreviateNbtPath(r.path()) + " " + r.operator() + " " + r.value()));
+                        tipLines.add(Component.literal(FilterScreenText.abbreviateNbtPath(r.path()) + " " + r.operator() + " " + r.value()));
                     }
                     g.renderTooltip(font, tipLines, mx, my);
                 } else {
@@ -3383,7 +3315,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
             if (i + 1 < n) {
                 String pj = detailCachedNbtEntries.get(order[i + 1]).path();
-                String lcp = nbtCommonPrefix(pi, pj);
+                String lcp = FilterScreenText.commonPrefix(pi, pj);
                 int sep = -1;
                 for (int k = lcp.length() - 1; k >= 0; k--) {
                     char c = lcp.charAt(k);
@@ -3418,13 +3350,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
             nbtRows.add(new NbtRow(false, pi, order[i], ""));
             i++;
         }
-    }
-
-    private String nbtCommonPrefix(String a, String b) {
-        int len = Math.min(a.length(), b.length());
-        int i = 0;
-        while (i < len && a.charAt(i) == b.charAt(i)) i++;
-        return a.substring(0, i);
     }
 
     private List<NbtRow> getVisibleNbtRows() {
@@ -4000,7 +3925,7 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
 
         int ruleIdx = findActiveRuleIndex(menu.getSlotNbtRules(detailEditSlot), path);
         if (ruleIdx >= 0) {
-            String savedVal = formatNbtValue(menu.getSlotNbtRules(detailEditSlot).get(ruleIdx).value().toString());
+            String savedVal = FilterScreenText.formatNbtValue(menu.getSlotNbtRules(detailEditSlot).get(ruleIdx).value().toString());
             ClientPacketDistributor.sendToServer(SetFilterEntryNbtPayload.remove(detailEditSlot, ruleIdx));
             menu.removeSlotNbtRule(detailEditSlot, ruleIdx);
             ClientPacketDistributor.sendToServer(SetFilterEntryNbtPayload.add(detailEditSlot, path, nextOp, savedVal));
@@ -4307,22 +4232,6 @@ public class FilterScreen extends LegacyContainerScreen<FilterMenu> {
             ClientPacketDistributor.sendToServer(new SetFilterEntryDurabilityPayload(
                     detailEditSlot, "", 0));
         }
-    }
-
-    private static String abbreviateNbtPath(String path) {
-        StringBuilder result = new StringBuilder();
-        String[] segments = path.split("\\.");
-        for (int i = 0; i < segments.length; i++) {
-            if (i > 0) result.append(".");
-            String seg = segments[i];
-            int colon = seg.indexOf(':');
-            if (colon > 4) {
-                result.append(seg, 0, 4).append(seg.substring(colon));
-            } else {
-                result.append(seg);
-            }
-        }
-        return result.toString();
     }
 
     private void clearDetailEntry() {

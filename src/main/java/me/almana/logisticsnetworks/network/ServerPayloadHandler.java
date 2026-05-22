@@ -36,8 +36,10 @@ import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import me.almana.logisticsnetworks.network.SetFilterChemicalEntryPayload;
@@ -47,10 +49,11 @@ import org.slf4j.Logger;
 public class ServerPayloadHandler {
 
     private static final Logger LOGGER = LogUtils.getLogger();
+    private static final Map<UUID, Boolean> DEFAULT_NODE_VISIBILITY = new HashMap<>();
 
     public static void handleUpdateChannel(UpdateChannelPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
 
@@ -120,7 +123,7 @@ public class ServerPayloadHandler {
     public static void handleAssignNetwork(AssignNetworkPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
             ServerPlayer player = (ServerPlayer) context.player();
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
 
@@ -252,10 +255,27 @@ public class ServerPayloadHandler {
 
     public static void handleToggleVisibility(ToggleNodeVisibilityPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node != null)
                 node.setRenderVisible(!node.isRenderVisible());
         });
+    }
+
+    public static void handleSetDefaultNodeVisibility(SetDefaultNodeVisibilityPayload payload,
+            IPayloadContext context) {
+        context.enqueueWork(() -> {
+            if (context.player() instanceof ServerPlayer player) {
+                DEFAULT_NODE_VISIBILITY.put(player.getUUID(), payload.visible());
+            }
+        });
+    }
+
+    public static boolean getDefaultNodeVisibility(Player player) {
+        return DEFAULT_NODE_VISIBILITY.getOrDefault(player.getUUID(), true);
+    }
+
+    public static void clearDefaultNodeVisibility(Player player) {
+        DEFAULT_NODE_VISIBILITY.remove(player.getUUID());
     }
 
     public static void handleCycleWrenchMode(CycleWrenchModePayload payload, IPayloadContext context) {
@@ -313,7 +333,7 @@ public class ServerPayloadHandler {
 
     public static void handleSetFilter(SetFilterPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
             ChannelData channel = node.getChannel(payload.channelIndex());
@@ -327,7 +347,7 @@ public class ServerPayloadHandler {
 
     public static void handleSetChannelFilterItem(SetChannelFilterItemPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
             ChannelData channel = node.getChannel(payload.channelIndex());
@@ -343,7 +363,7 @@ public class ServerPayloadHandler {
 
     public static void handleSetNodeUpgradeItem(SetNodeUpgradeItemPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
 
@@ -417,7 +437,7 @@ public class ServerPayloadHandler {
 
     public static void handleSetChannelName(SetChannelNamePayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null) return;
             ChannelData channel = node.getChannel(payload.channelIndex());
             if (channel == null) return;
@@ -459,7 +479,7 @@ public class ServerPayloadHandler {
         context.enqueueWork(() -> {
             if (!(context.player() instanceof ServerPlayer serverPlayer)) return;
 
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null) return;
 
             int ch = payload.channel();
@@ -593,6 +613,12 @@ public class ServerPayloadHandler {
     private static LogisticsNodeEntity getNode(IPayloadContext context, int entityId) {
         Entity entity = context.player().level().getEntity(entityId);
         return (entity instanceof LogisticsNodeEntity node && node.isValidNode()) ? node : null;
+    }
+
+    private static LogisticsNodeEntity getAuthorizedNode(IPayloadContext context, int entityId) {
+        LogisticsNodeEntity node = getNode(context, entityId);
+        if (node == null) return null;
+        return node.isOwnedBy(context.player()) ? node : null;
     }
 
     public static void markNetworkDirty(LogisticsNodeEntity node) {
@@ -742,7 +768,7 @@ public class ServerPayloadHandler {
 
     public static void handleSetNodeLabel(SetNodeLabelPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            LogisticsNodeEntity node = getNode(context, payload.entityId());
+            LogisticsNodeEntity node = getAuthorizedNode(context, payload.entityId());
             if (node == null)
                 return;
 
