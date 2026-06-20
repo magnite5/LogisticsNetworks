@@ -53,10 +53,12 @@ neoForge {
     runs {
         create("client") {
             client()
+            gameDirectory = file("run/${minecraft_version}/client")
             systemProperty("neoforge.enabledGameTestNamespaces", mod_id)
         }
         create("server") {
             server()
+            gameDirectory = file("run/${minecraft_version}/server")
             programArgument("--nogui")
             systemProperty("neoforge.enabledGameTestNamespaces", mod_id)
         }
@@ -66,10 +68,21 @@ neoForge {
         }
         create("data") {
             clientData()
+            gameDirectory = file("run/${minecraft_version}/data")
             programArguments.addAll(
                 "--mod", mod_id,
                 "--all",
-                "--output", file("src/generated/resources/").absolutePath,
+                "--output", file("src/generated/client/").absolutePath,
+                "--existing", file("src/main/resources/").absolutePath
+            )
+        }
+        create("serverData") {
+            serverData()
+            gameDirectory = file("run/${minecraft_version}/serverData")
+            programArguments.addAll(
+                "--mod", mod_id,
+                "--all",
+                "--output", file("src/generated/server/").absolutePath,
                 "--existing", file("src/main/resources/").absolutePath
             )
         }
@@ -86,14 +99,8 @@ neoForge {
     }
 }
 
-sourceSets.main.get().resources.srcDir("src/generated/resources")
-// 26.1 compile triage
-sourceSets.main.get().java.exclude(
-    "me/almana/logisticsnetworks/client/ClientEventHandler.java",
-    "me/almana/logisticsnetworks/client/LogisticsNodeRenderer.java",
-    "me/almana/logisticsnetworks/client/model/**",
-    "me/almana/logisticsnetworks/integration/emi/**"
-)
+sourceSets.main.get().resources.srcDir("src/generated/client")
+sourceSets.main.get().resources.srcDir("src/generated/server")
 
 dependencies {
     compileOnly("mezz.jei:jei-${minecraft_version}-common-api:${jei_version}")
@@ -104,7 +111,7 @@ dependencies {
         isTransitive = false
     }
 
-    compileOnly("org.appliedenergistics:guideme:${guideme_version}:api")
+    compileOnly("org.appliedenergistics:guideme:${guideme_version}")
     runtimeOnly("org.appliedenergistics:guideme:${guideme_version}")
 
     compileOnly("maven.modrinth:jade:${jade_version}")
@@ -112,6 +119,11 @@ dependencies {
 
     compileOnly("org.appliedenergistics:appliedenergistics2:${ae2_version}")
     runtimeOnly("org.appliedenergistics:appliedenergistics2:${ae2_version}")
+
+    // Iris API — compile-only; shaders are an optional runtime dependency.
+    compileOnly("maven.modrinth:iris:1.10.9+26.1-neoforge") {
+        isTransitive = false
+    }
 
     // 26.1 compat deps pending
     /*

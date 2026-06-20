@@ -4,8 +4,9 @@ import net.minecraft.core.Direction;
 import org.jetbrains.annotations.Nullable;
 
 import com.mojang.blaze3d.platform.InputConstants;
-import me.almana.logisticsnetworks.Logisticsnetworks;
+import me.almana.logisticsnetworks.LogisticsNetworks;
 import me.almana.logisticsnetworks.data.ChannelData;
+import me.almana.logisticsnetworks.data.NetworkColors;
 import me.almana.logisticsnetworks.data.ChannelMode;
 import me.almana.logisticsnetworks.data.ChannelType;
 import me.almana.logisticsnetworks.data.DistributionMode;
@@ -15,13 +16,22 @@ import me.almana.logisticsnetworks.data.RedstoneMode;
 import me.almana.logisticsnetworks.client.ClientInput;
 import me.almana.logisticsnetworks.client.GuiGraphics;
 import me.almana.logisticsnetworks.client.LegacyContainerScreen;
+import me.almana.logisticsnetworks.filter.FilterItemData;
+import me.almana.logisticsnetworks.filter.ModFilterData;
+import me.almana.logisticsnetworks.filter.NameFilterData;
+import me.almana.logisticsnetworks.filter.FilterTargetType;
+import me.almana.logisticsnetworks.filter.VirtualFilterType;
 import me.almana.logisticsnetworks.integration.ars.ArsCompat;
 import me.almana.logisticsnetworks.integration.guideme.GuideMeCompat;
 import me.almana.logisticsnetworks.integration.mekanism.MekanismCompat;
 import me.almana.logisticsnetworks.entity.LogisticsNodeEntity;
 import me.almana.logisticsnetworks.menu.NodeMenu;
 import me.almana.logisticsnetworks.network.AssignNetworkPayload;
+import me.almana.logisticsnetworks.network.AddNodeFilterItemPayload;
+import me.almana.logisticsnetworks.network.OpenNodeFilterPayload;
+import me.almana.logisticsnetworks.network.SetChannelFilterItemPayload;
 import me.almana.logisticsnetworks.network.RenameNetworkPayload;
+import me.almana.logisticsnetworks.network.SetNetworkColorPayload;
 import me.almana.logisticsnetworks.network.RequestNetworkLabelsPayload;
 import me.almana.logisticsnetworks.network.SelectNodeChannelPayload;
 import me.almana.logisticsnetworks.network.SetChannelNamePayload;
@@ -35,10 +45,14 @@ import me.almana.logisticsnetworks.client.theme.ThemeState;
 import me.almana.logisticsnetworks.client.theme.Themes;
 import me.almana.logisticsnetworks.upgrade.NodeUpgradeData;
 import net.minecraft.client.gui.components.EditBox;
+import me.almana.logisticsnetworks.registration.ModTags;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.client.network.ClientPacketDistributor;
 
 import java.util.*;
@@ -47,6 +61,23 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
     private enum Page {
         NETWORK_SELECT, CHANNEL_CONFIG
+    }
+
+    private enum SortMode {
+        NAME_ASC, NAME_DESC, OLD_NEW, NEW_OLD;
+
+        SortMode next() {
+            return values()[(ordinal() + 1) % values().length];
+        }
+
+        String labelKey() {
+            return switch (this) {
+                case NAME_ASC -> "gui.logisticsnetworks.node.sort.az";
+                case NAME_DESC -> "gui.logisticsnetworks.node.sort.za";
+                case OLD_NEW -> "gui.logisticsnetworks.node.sort.old_new";
+                case NEW_OLD -> "gui.logisticsnetworks.node.sort.new_old";
+            };
+        }
     }
 
     // Constants
@@ -93,10 +124,9 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
     private List<SyncNetworkListPayload.NetworkEntry> networkList = new ArrayList<>();
     private String lastNetworkFilter = "";
     private int networkScrollOffset = 0;
+    private SortMode sortMode = SortMode.NAME_ASC;
 
-    // Rename state
-    private UUID renamingNetworkId = null;
-    private EditBox renameEditBox = null;
+    private NetworkEditor editor;
 
     // Settings scroll state
     private int settingsScrollOffset = 0;
@@ -105,6 +135,11 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
     private int settingsHoverRow = -1;
     private long settingsHoverStartTime = 0;
+    private boolean filterDisabledHover = false;
+    private boolean filterPickerOpen = false;
+    private int filterPickerSlot = -1;
+    private boolean filterAddHover = false;
+    private long filterAddedToastUntil = 0;
     private static final long TOOLTIP_DELAY = 1000L;
 
     private long lastTabClickTime = 0;
@@ -163,7 +198,6 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
     private void rebuildPageLayout() {
         stopNumericEdit(false);
-        stopRenameEdit(false);
         clearWidgets();
         getMenu().setNodeSlotsVisible(currentPage == Page.CHANNEL_CONFIG);
         if (currentPage == Page.NETWORK_SELECT) {
@@ -234,8 +268,14 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         if (labelPickerOpen && currentPage == Page.CHANNEL_CONFIG) {
             renderLabelPicker(g, mx, my, pt);
         }
+        if (filterPickerOpen && currentPage == Page.CHANNEL_CONFIG) {
+            renderFilterPicker(g, mx, my);
+        }
         if (tweaksOpen) {
             renderTweaksPanel(g, mx, my);
+        }
+        if (editor != null) {
+            editor.render(g, mx, my, pt, theme());
         }
         this.renderTooltip(g, mx, my);
         if (hoveredChannelName != null && currentPage == Page.CHANNEL_CONFIG) {
@@ -246,6 +286,19 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
             LogisticsNodeEntity node = getMenu().getNode();
             List<Component> tip = getSettingTooltip(node.getChannel(selectedChannel), settingsHoverRow);
             g.renderTooltip(font, tip, mx, my);
+        }
+        if (filterDisabledHover && currentPage == Page.CHANNEL_CONFIG) {
+            g.renderTooltip(font,
+                    Component.translatable("gui.logisticsnetworks.node.filter.unfilterable"), mx, my);
+        }
+        if (filterAddHover && currentPage == Page.CHANNEL_CONFIG) {
+            g.renderTooltip(font,
+                    Component.translatable("gui.logisticsnetworks.node.filter.add.hint"), mx, my);
+        }
+        if (System.currentTimeMillis() < filterAddedToastUntil && currentPage == Page.CHANNEL_CONFIG) {
+            g.renderTooltip(font,
+                    Component.translatable("gui.logisticsnetworks.node.filter.add.done")
+                            .withStyle(ChatFormatting.GREEN), mx, my);
         }
     }
 
@@ -458,6 +511,7 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         g.fill(leftPos + 12, topPos + 76, leftPos + GUI_WIDTH - 12, topPos + 77, cBorder());
         g.drawString(font, Component.translatable("gui.logisticsnetworks.node.existing_networks"), leftPos + 14,
                 topPos + 82, cSubtle(), false);
+        drawSortButton(g, mx, my);
 
         String currentFilter = networkNameField != null ? networkNameField.getValue().trim() : "";
         if (!currentFilter.equals(lastNetworkFilter)) {
@@ -493,35 +547,68 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         ThemePaint.button(g, font, x, y, w, h, label, hovered, theme());
     }
 
+    private static final int SORT_ICON_W = 5;
+    private static final int SORT_ICON_GAP = 4;
+
+    private int[] sortButtonBounds() {
+        String label = tr(sortMode.labelKey());
+        int w = font.width(label) + 12 + SORT_ICON_W + SORT_ICON_GAP;
+        int h = 13;
+        int x = leftPos + GUI_WIDTH - 14 - w;
+        int y = topPos + 79;
+        return new int[] { x, y, w, h };
+    }
+
+    private void drawSortButton(GuiGraphics g, int mx, int my) {
+        String label = tr(sortMode.labelKey());
+        int[] b = sortButtonBounds();
+        boolean hovered = mx >= b[0] && mx <= b[0] + b[2] && my >= b[1] && my <= b[1] + b[3];
+        int fg = hovered ? ((cBorderStrong() == cText()) ? theme().bg() : cText()) : cMuted();
+        g.fill(b[0], b[1], b[0] + b[2], b[1] + b[3], hovered ? cBorderStrong() : cPanel());
+        g.renderOutline(b[0], b[1], b[2], b[3], hovered ? cAccent() : cBorder());
+
+        int iconX = b[0] + 5;
+        int iconY = b[1] + 3;
+        drawSortIcon(g, iconX, iconY, fg);
+        g.drawString(font, label, iconX + SORT_ICON_W + SORT_ICON_GAP, b[1] + 3, fg, false);
+    }
+
+    private void drawSortIcon(GuiGraphics g, int x, int y, int color) {
+        g.fill(x + 2, y, x + 3, y + 1, color);
+        g.fill(x + 1, y + 1, x + 4, y + 2, color);
+        g.fill(x, y + 2, x + 5, y + 3, color);
+        g.fill(x, y + 4, x + 5, y + 5, color);
+        g.fill(x + 1, y + 5, x + 4, y + 6, color);
+        g.fill(x + 2, y + 6, x + 3, y + 7, color);
+    }
+
     private void drawNetworkListEntry(GuiGraphics g, SyncNetworkListPayload.NetworkEntry entry, int x, int y, int w,
             int mx, int my) {
-        boolean isRenaming = entry.id().equals(renamingNetworkId);
-        int renameBtnW = font.width(tr("gui.logisticsnetworks.rename")) + 14;
-        int renameBtnX = x + w - renameBtnW;
+        int editBtnW = font.width(tr("gui.logisticsnetworks.node.edit")) + 14;
+        int editBtnX = x + w - editBtnW;
 
-        if (isRenaming && renameEditBox != null) {
-            g.fill(x, y, x + w, y + 17, cPanel());
-            g.renderOutline(x, y, w, 17, cAccent());
-            return;
-        }
-
-        boolean hoveredRow = mx >= x && mx <= x + w && my >= y && my <= y + 17;
-        boolean hoveredRename = mx >= renameBtnX && mx <= renameBtnX + renameBtnW && my >= y && my <= y + 17;
+        boolean hoveredEdit = mx >= editBtnX && mx <= editBtnX + editBtnW && my >= y && my <= y + 17;
+        boolean hoveredRow = mx >= x && mx <= x + w && my >= y && my <= y + 17 && !hoveredEdit;
         int hoverFg = (cBorderStrong() == cText()) ? theme().bg() : cText();
 
         g.fill(x, y, x + w, y + 17, hoveredRow ? cBorderStrong() : cPanel());
         g.renderOutline(x, y, w, 17, hoveredRow ? cAccent() : cBorder());
-        g.drawString(font, entry.name(), x + 5, y + 4, hoveredRow ? hoverFg : cMuted(), false);
+
+        int swX = x + 5;
+        int swY = y + 5;
+        g.fill(swX, swY, swX + 8, swY + 8, 0xFF000000 | entry.color());
+        g.renderOutline(swX, swY, 8, 8, cBorder());
+
+        g.drawString(font, entry.name(), x + 17, y + 4, hoveredRow ? hoverFg : cMuted(), false);
 
         String info = tr("gui.logisticsnetworks.node.network_nodes", entry.nodeCount());
-        int infoX = renameBtnX - font.width(info) - 4;
+        int infoX = editBtnX - font.width(info) - 6;
         g.drawString(font, info, infoX, y + 4, hoveredRow ? hoverFg : cSubtle(), false);
 
-        // Rename button
-        g.fill(renameBtnX, y, renameBtnX + renameBtnW, y + 17, hoveredRename ? cBorderStrong() : cPanel());
-        g.renderOutline(renameBtnX, y, renameBtnW, 17, hoveredRename ? cAccent() : cBorder());
-        ThemePaint.drawCentered(g, font, tr("gui.logisticsnetworks.rename"), renameBtnX + renameBtnW / 2, y + 4,
-                hoveredRename ? hoverFg : cMuted());
+        g.fill(editBtnX, y, editBtnX + editBtnW, y + 17, hoveredEdit ? cBorderStrong() : cPanel());
+        g.renderOutline(editBtnX, y, editBtnW, 17, hoveredEdit ? cAccent() : cBorder());
+        ThemePaint.drawCentered(g, font, tr("gui.logisticsnetworks.node.edit"), editBtnX + editBtnW / 2, y + 4,
+                hoveredEdit ? hoverFg : cMuted());
     }
 
     private void renderChannelConfigPage(GuiGraphics g, int mx, int my) {
@@ -533,6 +620,9 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         String netName = clipToWidth(getNetworkName(node.getNetworkId()), GUI_WIDTH - 140);
         int netNameW = font.width(netName);
         int netChipX = leftPos + (GUI_WIDTH - netNameW - 12) / 2;
+        int chipSwX = netChipX - 11;
+        g.fill(chipSwX, topPos + 5, chipSwX + 8, topPos + 13, 0xFF000000 | getNetworkColor(node.getNetworkId()));
+        g.renderOutline(chipSwX, topPos + 5, 8, 8, t.border());
         ThemePaint.chip(g, font, netChipX, topPos + 4, netName, t);
 
         boolean isVisible = node.isRenderVisible();
@@ -684,6 +774,19 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         return tr("gui.logisticsnetworks.node.network.fallback", netId.toString().substring(0, 8));
     }
 
+    private int getNetworkColor(UUID netId) {
+        if (netId == null) {
+            return NetworkColors.DEFAULT;
+        }
+        for (SyncNetworkListPayload.NetworkEntry e : networkList) {
+            if (e.id().equals(netId)) {
+                return e.color();
+            }
+        }
+        LogisticsNodeEntity node = getMenu().getNode();
+        return node != null ? node.getNetworkColor() : NetworkColors.DEFAULT;
+    }
+
     private String clipToWidth(String text, int maxWidth) {
         if (text == null)
             return "";
@@ -714,7 +817,8 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
             int x = startX + i * 26;
             boolean hovered = !labelPickerOpen && mx >= x && mx <= x + 24 && my >= y && my <= y + 12;
             boolean hasDot = !isSelected && isEnabled;
-            ThemePaint.tab(g, font, x, y, 24, 12, String.valueOf(i), isSelected, hasDot, hovered, t);
+            ChannelType type = ch != null ? ch.getType() : null;
+            ThemePaint.channelTab(g, font, x, y, 24, 12, String.valueOf(i), type, isSelected, hasDot, hovered, t);
             if (isSelected && !isEnabled) {
                 ThemePaint.roundOutline(g, x, y, 24, 12, 2, cDanger(), t.sharpCorners());
             }
@@ -798,6 +902,12 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         if (settingsScrollOffset < maxScroll) {
             g.drawString(font, "\u25BC", x + w + 2, y + h - 9, cSubtle(), false);
         }
+
+        if (editingRow != -1 && numericEditBox != null) {
+            int bx = numericEditBox.getX();
+            int by = numericEditBox.getY();
+            g.fill(bx - 2, by, bx + numericEditBox.getWidth(), by + numericEditBox.getHeight(), t.surfaceSunken());
+        }
     }
 
     private Theme.Variant getModeVariant(ChannelMode mode) {
@@ -833,6 +943,8 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
     }
 
     private void drawFilterGrid(GuiGraphics g, ChannelData ch, int x, int y, int mx, int my) {
+        filterDisabledHover = false;
+        filterAddHover = false;
         Theme t = theme();
         String filtersLabel = tr("gui.logisticsnetworks.node.filters");
         g.drawString(font, filtersLabel, x, y, cMuted(), false);
@@ -846,10 +958,29 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
         int gridY = y + 12;
         int gridW = 3 * 19 - 1;
-        ThemePaint.sunkPanel(g, x - 2, gridY - 2, gridW + 4, 3 * 19 + 2, t);
-        drawSlotGrid(g, x, gridY, 3, 3, mx, my);
+        boolean filterable = ch.getType() != ChannelType.ENERGY && ch.getType() != ChannelType.SOURCE;
+        ThemePaint.sunkPanel(g, x - 2, gridY - 2, gridW + 4, 2 * 19 + 2, t);
+        for (int i = 0; i < ChannelData.FILTER_SIZE; i++) {
+            int bx = x + (i % 3) * 19;
+            int by = gridY + (i / 3) * 19;
+            boolean hovered = filterable && !labelPickerOpen && !filterPickerOpen
+                    && mx >= bx - 1 && mx <= bx + 17 && my >= by - 1 && my <= by + 17;
+            ItemStack stack = ch.getFilterItem(i);
+            String label = filterable ? filterButtonText(stack) : "";
+            ThemePaint.button(g, font, bx - 1, by - 1, 18, 18, label, hovered, t);
+            if (hovered && !menu.getCarried().isEmpty() && !menu.getCarried().is(ModTags.FILTERS)
+                    && isFilterSlotItemAddable(i)) {
+                filterAddHover = true;
+            }
+        }
+        if (!filterable) {
+            g.fill(x - 2, gridY - 2, x - 2 + gridW + 4, gridY - 2 + 2 * 19 + 2, 0x99202020);
+            if (!labelPickerOpen && mx >= x - 2 && mx <= x + gridW && my >= gridY - 2 && my <= gridY + 2 * 19) {
+                filterDisabledHover = true;
+            }
+        }
 
-        int upgY = gridY + 3 * 19 + 2;
+        int upgY = gridY + 2 * 19 + 2;
         String upgradesLabel = Component.translatable("gui.logisticsnetworks.node.upgrades").getString();
         g.drawString(font, upgradesLabel, x, upgY, cMuted(), false);
 
@@ -866,6 +997,165 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
                 drawSlot(g, x - 1, y - 1);
             }
         }
+    }
+
+    private int filterButtonX(int slot) {
+        return leftPos + 168 + (slot % 3) * 19;
+    }
+
+    private int filterButtonY(int slot) {
+        return topPos + 68 + (slot / 3) * 19;
+    }
+
+    public int getFilterSlotCount() {
+        return ChannelData.FILTER_SIZE;
+    }
+
+    public boolean isFilterSlotItemAddable(int slot) {
+        LogisticsNodeEntity node = getMenu().getNode();
+        if (node == null) {
+            return false;
+        }
+        ChannelData ch = node.getChannel(selectedChannel);
+        if (ch == null || ch.getType() == ChannelType.ENERGY || ch.getType() == ChannelType.SOURCE) {
+            return false;
+        }
+        ItemStack filter = ch.getFilterItem(slot);
+        return filter.isEmpty() || FilterItemData.isFilterItem(filter);
+    }
+
+    public Rect2i getFilterSlotArea(int slot) {
+        return new Rect2i(filterButtonX(slot) - 1, filterButtonY(slot) - 1, 18, 18);
+    }
+
+    public void addItemToFilterSlot(int slot, ItemStack item) {
+        LogisticsNodeEntity node = getMenu().getNode();
+        if (node == null || item.isEmpty() || item.is(ModTags.FILTERS)) {
+            return;
+        }
+        ChannelData ch = node.getChannel(selectedChannel);
+        if (ch == null || ch.getType() == ChannelType.ENERGY || ch.getType() == ChannelType.SOURCE) {
+            return;
+        }
+        ItemStack filter = ch.getFilterItem(slot);
+        if (filter.isEmpty()) {
+            filter = VirtualFilterType.SMALL.createStack();
+            FilterItemData.setTargetType(filter, FilterTargetType.forChannel(ch.getType()));
+        } else if (!FilterItemData.isFilterItem(filter)) {
+            return;
+        } else {
+            filter = filter.copy();
+        }
+        if (!FilterItemData.addItem(filter, item, minecraft.level.registryAccess())) {
+            return;
+        }
+        ch.setFilterItem(slot, filter);
+        ClientPacketDistributor.sendToServer(new AddNodeFilterItemPayload(
+                node.getId(), selectedChannel, slot, item.copyWithCount(1)));
+        filterAddedToastUntil = System.currentTimeMillis() + 1500;
+    }
+
+    private boolean isHoveringFilterButton(int slot, double mx, double my) {
+        int x = filterButtonX(slot);
+        int y = filterButtonY(slot);
+        return mx >= x - 1 && mx <= x + 17 && my >= y - 1 && my <= y + 17;
+    }
+
+    private String filterButtonText(ItemStack stack) {
+        if (isFilterButtonEmpty(stack)) {
+            return "+";
+        }
+        return switch (VirtualFilterType.fromStack(stack)) {
+            case MOD -> "Mo";
+            case NAME -> "Rx";
+            default -> "N";
+        };
+    }
+
+    private boolean isFilterButtonEmpty(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return true;
+        }
+        VirtualFilterType type = VirtualFilterType.fromStack(stack);
+        return switch (type) {
+            case EXISTING -> false;
+            case SMALL, MEDIUM, BIG -> !FilterItemData.hasAnyEntries(stack);
+            case MOD -> !ModFilterData.hasAnyMods(stack);
+            case NAME -> !NameFilterData.hasNameFilter(stack);
+        };
+    }
+
+    private static final int FILTER_PICKER_W = 56;
+    private static final int FILTER_PICKER_ROW_H = 13;
+
+    private void openFilterPicker(int slot) {
+        filterPickerOpen = true;
+        filterPickerSlot = slot;
+    }
+
+    private void closeFilterPicker() {
+        filterPickerOpen = false;
+        filterPickerSlot = -1;
+    }
+
+    private int filterPickerX() {
+        int x = filterButtonX(filterPickerSlot);
+        int max = leftPos + GUI_WIDTH - 6 - FILTER_PICKER_W;
+        return Math.min(x, max);
+    }
+
+    private int filterPickerY() {
+        return filterButtonY(filterPickerSlot) + 18;
+    }
+
+    private void renderFilterPicker(GuiGraphics g, int mx, int my) {
+        int px = filterPickerX();
+        int py = filterPickerY();
+        int pw = FILTER_PICKER_W;
+        int ph = 3 * FILTER_PICKER_ROW_H;
+        String[] labels = {
+                tr("gui.logisticsnetworks.node.filter.pick.normal"),
+                tr("gui.logisticsnetworks.node.filter.pick.mod"),
+                tr("gui.logisticsnetworks.node.filter.pick.regex")
+        };
+        g.pose().pushPose();
+        g.pose().translate(0, 0, 200);
+        g.fill(px - 1, py - 1, px + pw + 1, py + ph + 1, cBorder());
+        g.fill(px, py, px + pw, py + ph, cPanel());
+        for (int r = 0; r < labels.length; r++) {
+            int ry = py + r * FILTER_PICKER_ROW_H;
+            boolean hovered = mx >= px && mx < px + pw && my >= ry && my < ry + FILTER_PICKER_ROW_H;
+            if (hovered) {
+                g.fill(px, ry, px + pw, ry + FILTER_PICKER_ROW_H, cHover());
+            }
+            g.drawString(font, labels[r], px + 4, ry + 3, cInfo(), false);
+        }
+        g.pose().popPose();
+    }
+
+    private boolean handleFilterPickerClick(LogisticsNodeEntity node, double mx, double my) {
+        ChannelData channel = node.getChannel(selectedChannel);
+        if (channel == null) {
+            return false;
+        }
+        int slot = filterPickerSlot;
+        VirtualFilterType[] opts = {
+                VirtualFilterType.SMALL, VirtualFilterType.MOD, VirtualFilterType.NAME
+        };
+        int px = filterPickerX();
+        int py = filterPickerY();
+        for (int r = 0; r < opts.length; r++) {
+            int ry = py + r * FILTER_PICKER_ROW_H;
+            if (mx >= px && mx < px + FILTER_PICKER_W && my >= ry && my < ry + FILTER_PICKER_ROW_H) {
+                VirtualFilterType type = opts[r];
+                channel.setFilterItem(slot, type.createStack());
+                ClientPacketDistributor.sendToServer(new OpenNodeFilterPayload(
+                        node.getId(), selectedChannel, slot, type));
+                closeFilterPicker();
+                return true;
+            }
+        }
+        return false;
     }
 
     private void drawSettingRow(GuiGraphics g, int x, int y, int w, int rowH, String label, String value,
@@ -940,6 +1230,9 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
+        if (editor != null) {
+            return editor.mouseClicked(mx, my, btn);
+        }
         if (tweaksOpen) {
             if (btn == 0) return handleTweaksClick(mx, my);
             return true;
@@ -947,7 +1240,7 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         if (currentPage == Page.CHANNEL_CONFIG && btn == 0 && isInDocsFab(mx, my)) {
             if (minecraft != null && minecraft.player != null) {
                 GuideMeCompat.openGuide(minecraft.player,
-                        Identifier.fromNamespaceAndPath(Logisticsnetworks.MOD_ID, "guide"));
+                        Identifier.fromNamespaceAndPath(LogisticsNetworks.MOD_ID, "guide"));
             }
             return true;
         }
@@ -960,6 +1253,11 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         }
         if (channelNameEditing && channelNameEditBox != null && !channelNameEditBox.isMouseOver(mx, my)) {
             stopChannelNameEdit(true);
+        }
+
+        if (currentPage == Page.CHANNEL_CONFIG && (labelPickerOpen || filterPickerOpen)
+                && handleChannelPageClick(mx, my, btn)) {
+            return true;
         }
 
         if (isHoveringMenuSlot(mx, my)) {
@@ -977,9 +1275,11 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
     }
 
     private boolean handleNetworkPageClick(double mx, double my) {
-        // Cancel rename if clicking outside the rename edit box
-        if (renamingNetworkId != null && renameEditBox != null && !renameEditBox.isMouseOver(mx, my)) {
-            stopRenameEdit(false);
+        int[] sb = sortButtonBounds();
+        if (isHoveringAbs(sb[0], sb[1], sb[2], sb[3], mx, my)) {
+            sortMode = sortMode.next();
+            networkScrollOffset = 0;
+            return true;
         }
 
         if (isHoveringAbs(leftPos + GUI_WIDTH / 2 - 45, topPos + 54, 90, 16, mx, my)) {
@@ -997,16 +1297,14 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         for (int i = networkScrollOffset; i < endIdx; i++) {
             SyncNetworkListPayload.NetworkEntry entry = filtered.get(i);
             int y = listY + (i - networkScrollOffset) * 20;
-            int renameBtnW = font.width(tr("gui.logisticsnetworks.rename")) + 14;
-            int renameBtnX = leftPos + 14 + entryW - renameBtnW;
+            int editBtnW = font.width(tr("gui.logisticsnetworks.node.edit")) + 14;
+            int editBtnX = leftPos + 14 + entryW - editBtnW;
 
-            // Check rename button click
-            if (isHoveringAbs(renameBtnX, y, renameBtnW, 17, mx, my)) {
-                startRenameEdit(entry, leftPos + 14 + 3, y + 1, entryW - 6);
+            if (isHoveringAbs(editBtnX, y, editBtnW, 17, mx, my)) {
+                openEditor(entry);
                 return true;
             }
 
-            // Check row click (select network) - only if not in the rename button area
             if (isHoveringAbs(leftPos + 14, y, entryW, 17, mx, my)) {
                 sendNetworkAssign(Optional.of(entry.id()), "");
                 return true;
@@ -1015,33 +1313,20 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
         return false;
     }
 
-    private void startRenameEdit(SyncNetworkListPayload.NetworkEntry entry, int x, int y, int w) {
-        stopRenameEdit(false);
-        renamingNetworkId = entry.id();
-        renameEditBox = new EditBox(font, x, y, w, 15, Component.empty());
-        renameEditBox.setMaxLength(32);
-        renameEditBox.setValue(entry.name());
-        renameEditBox.setBordered(false);
-        renameEditBox.setTextColor(cText());
-        renameEditBox.setFocused(true);
-        addRenderableWidget(renameEditBox);
-        setFocused(renameEditBox);
-    }
-
-    private void stopRenameEdit(boolean commit) {
-        if (renamingNetworkId == null || renameEditBox == null)
-            return;
-
-        if (commit) {
-            String newName = renameEditBox.getValue().trim();
-            if (!newName.isEmpty()) {
-                ClientPacketDistributor.sendToServer(new RenameNetworkPayload(renamingNetworkId, newName));
-            }
-        }
-
-        removeWidget(renameEditBox);
-        renameEditBox = null;
-        renamingNetworkId = null;
+    private void openEditor(SyncNetworkListPayload.NetworkEntry entry) {
+        UUID id = entry.id();
+        String oldName = entry.name();
+        int oldColor = entry.color();
+        editor = new NetworkEditor(font, width, height, oldName, oldColor,
+                (name, rgb) -> {
+                    if (!name.isEmpty() && !name.equals(oldName)) {
+                        ClientPacketDistributor.sendToServer(new RenameNetworkPayload(id, name));
+                    }
+                    if (rgb != oldColor) {
+                        ClientPacketDistributor.sendToServer(new SetNetworkColorPayload(id, rgb));
+                    }
+                },
+                () -> editor = null);
     }
 
     private void openLabelPicker(LogisticsNodeEntity node) {
@@ -1143,6 +1428,13 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
             return true;
         }
 
+        if (filterPickerOpen) {
+            if (handleFilterPickerClick(node, mx, my))
+                return true;
+            closeFilterPicker();
+            return true;
+        }
+
         String visibilityLabel = getVisibilityLabel(node.isRenderVisible());
         if (isHoveringAbs(leftPos + 8, topPos + 4, font.width(visibilityLabel) + 16, 12, mx, my)) {
             node.setRenderVisible(!node.isRenderVisible());
@@ -1179,6 +1471,40 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
                     ClientPacketDistributor.sendToServer(new SelectNodeChannelPayload(node.getId(), i));
                 }
                 return true;
+            }
+        }
+
+        if (btn == 0 || btn == 1) {
+            ChannelData channel = node.getChannel(selectedChannel);
+            if (channel != null
+                    && channel.getType() != ChannelType.ENERGY
+                    && channel.getType() != ChannelType.SOURCE) {
+                for (int i = 0; i < ChannelData.FILTER_SIZE; i++) {
+                    if (isHoveringFilterButton(i, mx, my)) {
+                        ItemStack carried = menu.getCarried();
+                        if (!carried.isEmpty() && !carried.is(ModTags.FILTERS)
+                                && isFilterSlotItemAddable(i)) {
+                            addItemToFilterSlot(i, carried);
+                            return true;
+                        }
+                        ItemStack current = channel.getFilterItem(i);
+                        if (isFilterButtonEmpty(current)) {
+                            if (btn == 0) {
+                                openFilterPicker(i);
+                            }
+                            return true;
+                        }
+                        if (btn == 1) {
+                            channel.setFilterItem(i, ItemStack.EMPTY);
+                            ClientPacketDistributor.sendToServer(new SetChannelFilterItemPayload(
+                                    node.getId(), selectedChannel, i, ItemStack.EMPTY));
+                            return true;
+                        }
+                        ClientPacketDistributor.sendToServer(new OpenNodeFilterPayload(
+                                node.getId(), selectedChannel, i, VirtualFilterType.EXISTING));
+                        return true;
+                    }
+                }
             }
         }
 
@@ -1324,10 +1650,9 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
             default -> "";
         };
 
-        numericEditBox = new EditBox(font, x, y, 70, 11, Component.empty());
+        numericEditBox = new FlatEditBox(font, x, y, 70, 11, Component.empty());
         numericEditBox.setMaxLength(10);
         numericEditBox.setValue(val);
-        numericEditBox.setBordered(true);
         numericEditBox.setTextColor(cText());
         numericEditBox.setFocused(true);
         addRenderableWidget(numericEditBox);
@@ -1494,18 +1819,43 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
     }
 
     @Override
+    public boolean mouseDragged(double mx, double my, int btn, double dx, double dy) {
+        if (editor != null && editor.mouseDragged(mx, my, btn)) {
+            return true;
+        }
+        return super.mouseDragged(mx, my, btn, dx, dy);
+    }
+
+    @Override
+    public boolean mouseReleased(double mx, double my, int btn) {
+        if (editor != null && editor.mouseReleased(mx, my, btn)) {
+            return true;
+        }
+        return super.mouseReleased(mx, my, btn);
+    }
+
+    @Override
     public boolean keyPressed(int key, int scan, int modifiers) {
+        if (editor != null) {
+            if (key == 256) {
+                editor = null;
+                return true;
+            }
+            if (editor.keyPressed(key, scan, modifiers)) {
+                return true;
+            }
+        }
         if (key == 256) {
             if (channelNameEditing) {
                 stopChannelNameEdit(false);
                 return true;
             }
-            if (labelPickerOpen) {
-                closeLabelPicker();
+            if (filterPickerOpen) {
+                closeFilterPicker();
                 return true;
             }
-            if (renamingNetworkId != null) {
-                stopRenameEdit(false);
+            if (labelPickerOpen) {
+                closeLabelPicker();
                 return true;
             }
             return super.keyPressed(key, scan, modifiers);
@@ -1528,14 +1878,6 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
             }
             return true;
         }
-        if (renamingNetworkId != null && renameEditBox != null) {
-            if (key == 257 || key == 335) {
-                stopRenameEdit(true);
-            } else {
-                renameEditBox.keyPressed(ClientInput.key(key, scan, modifiers));
-            }
-            return true;
-        }
         if (editingRow != -1) {
             if (key == 257 || key == 335)
                 stopNumericEdit(true);
@@ -1555,14 +1897,14 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
 
     @Override
     public boolean charTyped(char ch, int modifiers) {
+        if (editor != null) {
+            return editor.charTyped(ch);
+        }
         if (channelNameEditing && channelNameEditBox != null) {
             return channelNameEditBox.charTyped(ClientInput.character(ch));
         }
         if (labelPickerOpen && labelEditBox != null) {
             return labelEditBox.charTyped(ClientInput.character(ch));
-        }
-        if (renamingNetworkId != null && renameEditBox != null) {
-            return renameEditBox.charTyped(ClientInput.character(ch));
         }
         if (editingRow != -1 && numericEditBox != null) {
             if (Character.isDigit(ch) || ch == '-')
@@ -1626,15 +1968,27 @@ public class NodeScreen extends LegacyContainerScreen<NodeMenu> {
     }
 
     private List<SyncNetworkListPayload.NetworkEntry> getFilteredNetworks() {
-        if (networkNameField == null) return networkList;
-        String filter = networkNameField.getValue().trim().toLowerCase();
-        if (filter.isEmpty()) return networkList;
         List<SyncNetworkListPayload.NetworkEntry> filtered = new ArrayList<>();
+        String filter = networkNameField != null ? networkNameField.getValue().trim().toLowerCase() : "";
         for (SyncNetworkListPayload.NetworkEntry entry : networkList) {
-            if (entry.name().toLowerCase().contains(filter))
+            if (filter.isEmpty() || entry.name().toLowerCase().contains(filter))
                 filtered.add(entry);
         }
+        sortNetworks(filtered);
         return filtered;
+    }
+
+    private void sortNetworks(List<SyncNetworkListPayload.NetworkEntry> list) {
+        Comparator<SyncNetworkListPayload.NetworkEntry> byName =
+                Comparator.comparing(e -> e.name().toLowerCase());
+        switch (sortMode) {
+            case NAME_ASC -> list.sort(byName);
+            case NAME_DESC -> list.sort(byName.reversed());
+            case OLD_NEW -> list.sort(Comparator.comparingLong(
+                    SyncNetworkListPayload.NetworkEntry::createdAt).thenComparing(byName));
+            case NEW_OLD -> list.sort(Comparator.comparingLong(
+                    SyncNetworkListPayload.NetworkEntry::createdAt).reversed().thenComparing(byName));
+        }
     }
 
     private String tr(String key, Object... args) {

@@ -570,7 +570,7 @@ public class WrenchItem extends Item {
         if (player.isShiftKeyDown()) {
             return removeNode(level, node, player);
         }
-        return openNodeGui(node, player);
+        return openNodeGui(node, player, context.getItemInHand());
     }
 
     @Override
@@ -742,8 +742,9 @@ public class WrenchItem extends Item {
         return InteractionResult.CONSUME;
     }
 
-    private InteractionResult openNodeGui(LogisticsNodeEntity node, Player player) {
+    private InteractionResult openNodeGui(LogisticsNodeEntity node, Player player, ItemStack wrenchStack) {
         if (player instanceof ServerPlayer serverPlayer) {
+            GlobalPos openingLink = getAE2LinkPos(wrenchStack);
             serverPlayer.openMenu(new MenuProvider() {
                 @Override
                 public Component getDisplayName() {
@@ -752,7 +753,7 @@ public class WrenchItem extends Item {
 
                 @Override
                 public AbstractContainerMenu createMenu(int containerId, Inventory playerInv, Player p) {
-                    return new NodeMenu(containerId, playerInv, node);
+                    return new NodeMenu(containerId, playerInv, node, openingLink);
                 }
             }, buf -> Util.writeNodeSyncData(buf, node, player.registryAccess()));
 
@@ -1313,6 +1314,7 @@ public class WrenchItem extends Item {
         static void writeNodeSyncData(FriendlyByteBuf buf, LogisticsNodeEntity node,
                 HolderLookup.Provider provider) {
             buf.writeVarInt(node.getId());
+            buf.writeVarInt(0);
             for (int i = 0; i < LogisticsNodeEntity.CHANNEL_COUNT; i++) {
                 buf.writeNbt(node.getChannel(i).save(provider));
             }

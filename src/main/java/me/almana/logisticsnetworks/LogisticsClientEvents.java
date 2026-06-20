@@ -1,5 +1,6 @@
 package me.almana.logisticsnetworks;
 
+import me.almana.logisticsnetworks.client.SlotNumberOverlay;
 import me.almana.logisticsnetworks.client.WrenchHudOverlay;
 import me.almana.logisticsnetworks.client.DefaultNodeVisibilitySync;
 import me.almana.logisticsnetworks.client.screen.ClipboardScreen;
@@ -20,7 +21,7 @@ import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 
-@EventBusSubscriber(modid = Logisticsnetworks.MOD_ID, value = Dist.CLIENT)
+@EventBusSubscriber(modid = LogisticsNetworks.MOD_ID, value = Dist.CLIENT)
 public final class LogisticsClientEvents {
 
     private LogisticsClientEvents() {
@@ -48,6 +49,7 @@ public final class LogisticsClientEvents {
 
     public static void registerKeyMappings(RegisterKeyMappingsEvent event) {
         WrenchHudOverlay.registerKeys(event);
+        SlotNumberOverlay.registerKeys(event);
     }
 
     @SubscribeEvent

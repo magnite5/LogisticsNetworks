@@ -1,6 +1,6 @@
 package me.almana.logisticsnetworks.registration;
 
-import me.almana.logisticsnetworks.Logisticsnetworks;
+import me.almana.logisticsnetworks.LogisticsNetworks;
 import me.almana.logisticsnetworks.block.ComputerBlock;
 import me.almana.logisticsnetworks.block.ComputerBlockEntity;
 import me.almana.logisticsnetworks.item.BaseFilterItem;
@@ -22,6 +22,7 @@ import me.almana.logisticsnetworks.menu.MassPlacementMenu;
 import me.almana.logisticsnetworks.menu.NodeMenu;
 import me.almana.logisticsnetworks.menu.PatternSetterMenu;
 import me.almana.logisticsnetworks.recipe.FilterCopyClearRecipe;
+import me.almana.logisticsnetworks.recipe.GuideRecipe;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
@@ -50,17 +51,17 @@ import java.util.function.Supplier;
 public class Registration {
 
         public static final DeferredRegister<EntityType<?>> ENTITIES = DeferredRegister.create(Registries.ENTITY_TYPE,
-                        Logisticsnetworks.MOD_ID);
-        public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(Logisticsnetworks.MOD_ID);
-        public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(Logisticsnetworks.MOD_ID);
+                        LogisticsNetworks.MOD_ID);
+        public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(LogisticsNetworks.MOD_ID);
+        public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(LogisticsNetworks.MOD_ID);
         public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS = DeferredRegister
-                        .create(Registries.CREATIVE_MODE_TAB, Logisticsnetworks.MOD_ID);
+                        .create(Registries.CREATIVE_MODE_TAB, LogisticsNetworks.MOD_ID);
         public static final DeferredRegister<MenuType<?>> MENUS = DeferredRegister.create(Registries.MENU,
-                        Logisticsnetworks.MOD_ID);
+                        LogisticsNetworks.MOD_ID);
         public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITY_TYPES = DeferredRegister
-                        .create(Registries.BLOCK_ENTITY_TYPE, Logisticsnetworks.MOD_ID);
+                        .create(Registries.BLOCK_ENTITY_TYPE, LogisticsNetworks.MOD_ID);
         public static final DeferredRegister<RecipeSerializer<?>> RECIPE_SERIALIZERS = DeferredRegister
-                        .create(Registries.RECIPE_SERIALIZER, Logisticsnetworks.MOD_ID);
+                        .create(Registries.RECIPE_SERIALIZER, LogisticsNetworks.MOD_ID);
 
         // Some ugly shit I have done here....
         public static final DeferredHolder<EntityType<?>, EntityType<LogisticsNodeEntity>> LOGISTICS_NODE = ENTITIES
@@ -82,11 +83,11 @@ public class Registration {
                         id -> new WrenchItem(itemProperties(id).stacksTo(1)));
 
         public static final DeferredItem<BaseFilterItem> SMALL_FILTER = ITEMS.register("small_filter",
-                        id -> new BaseFilterItem(itemProperties(id), 9));
+                        id -> new BaseFilterItem(itemProperties(id), 45));
         public static final DeferredItem<BaseFilterItem> MEDIUM_FILTER = ITEMS.register("medium_filter",
-                        id -> new BaseFilterItem(itemProperties(id), 18));
+                        id -> new BaseFilterItem(itemProperties(id), 45));
         public static final DeferredItem<BaseFilterItem> BIG_FILTER = ITEMS.register("big_filter",
-                        id -> new BaseFilterItem(itemProperties(id), 27));
+                        id -> new BaseFilterItem(itemProperties(id), 45));
 
         public static final DeferredItem<ModFilterItem> MOD_FILTER = ITEMS.register("mod_filter",
                         id -> new ModFilterItem(itemProperties(id)));
@@ -146,14 +147,21 @@ public class Registration {
                         .register("filter_copy_clear",
                                         () -> FilterCopyClearRecipe.SERIALIZER);
 
+        public static final DeferredHolder<RecipeSerializer<?>, RecipeSerializer<GuideRecipe>> GUIDE_RECIPE = RECIPE_SERIALIZERS
+                        .register("guide",
+                                        () -> new RecipeSerializer<>(GuideRecipe.MAP_CODEC, GuideRecipe.STREAM_CODEC));
+
         public static final DeferredHolder<CreativeModeTab, CreativeModeTab> TAB = CREATIVE_TABS.register(
                         "logistics_tab",
                         () -> CreativeModeTab.builder()
-                                        .title(Component.translatable("itemGroup." + Logisticsnetworks.MOD_ID))
+                                        .title(Component.translatable("itemGroup." + LogisticsNetworks.MOD_ID))
                                         .icon(() -> new ItemStack(WRENCH.get()))
                                         .displayItems((params, output) -> {
                                                 ITEMS.getEntries().stream()
                                                                 .map(Supplier::get)
+                                                                .filter(item -> !(item instanceof BaseFilterItem))
+                                                                .filter(item -> !(item instanceof ModFilterItem))
+                                                                .filter(item -> !(item instanceof NameFilterItem))
                                                                 .forEach(output::accept);
                                                 ItemStack guideItem = GuideMeCompat.createGuideItem();
                                                 if (!guideItem.isEmpty()) {
@@ -175,7 +183,7 @@ public class Registration {
         private static EntityType<LogisticsNodeEntity> createLogisticsNodeType(Identifier id) {
                 return net.minecraft.world.entity.EntityType.Builder
                                 .<LogisticsNodeEntity>of(LogisticsNodeEntity::new, MobCategory.MISC)
-                                .sized(1.0f, 1.0f)
+                                .sized(0.05f, 0.05f)
                                 .clientTrackingRange(4)
                                 .updateInterval(40)
                                 .build(net.minecraft.resources.ResourceKey.create(Registries.ENTITY_TYPE, id));

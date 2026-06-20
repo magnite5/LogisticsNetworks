@@ -8,6 +8,7 @@ import me.almana.logisticsnetworks.network.SyncNetworkListPayload;
 import me.almana.logisticsnetworks.registration.ModTags;
 import me.almana.logisticsnetworks.registration.Registration;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.core.GlobalPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerLevel;
@@ -25,6 +26,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import org.jetbrains.annotations.Nullable;
 
 public class NodeMenu extends AbstractContainerMenu {
 
@@ -33,26 +35,32 @@ public class NodeMenu extends AbstractContainerMenu {
 
     // Grid Layout constants
     private static final int FILTER_GRID_X = 168;
-    private static final int FILTER_GRID_Y = 68;
-    private static final int FILTER_SLOTS = 9;
-
-    private static final int UPGRADE_GRID_Y = 137;
+    private static final int UPGRADE_GRID_Y = 118;
     private static final int UPGRADE_SLOTS = LogisticsNodeEntity.UPGRADE_SLOT_COUNT;
     private static final int GRID_STEP = 19;
 
     private final LogisticsNodeEntity node;
+    @Nullable
+    private final ServerPlayer serverPlayer;
+    @Nullable
+    private final GlobalPos ae2Link;
     private boolean remoteAccess;
     private int selectedChannel = 0;
     private boolean nodeSlotsActive = true;
+    private boolean movingUpgrade;
 
-    private final Container filterContainer;
     private final Container upgradeContainer;
 
     // Server-side
     public NodeMenu(int containerId, Inventory playerInv, LogisticsNodeEntity node) {
+        this(containerId, playerInv, node, null);
+    }
+
+    public NodeMenu(int containerId, Inventory playerInv, LogisticsNodeEntity node, @Nullable GlobalPos ae2Link) {
         super(Registration.NODE_MENU.get(), containerId);
         this.node = node;
-        this.filterContainer = new FilterItemsContainer();
+        this.serverPlayer = playerInv.player instanceof ServerPlayer player ? player : null;
+        this.ae2Link = ae2Link;
         this.upgradeContainer = new UpgradeItemsContainer();
 
         layoutNodeSlots();
@@ -63,10 +71,12 @@ public class NodeMenu extends AbstractContainerMenu {
     public NodeMenu(int containerId, Inventory playerInv, FriendlyByteBuf buf) {
         super(Registration.NODE_MENU.get(), containerId);
         int entityId = buf.readVarInt();
+        this.selectedChannel = Math.max(0, Math.min(8, buf.readVarInt()));
         Entity entity = playerInv.player.level().getEntity(entityId);
         this.node = (entity instanceof LogisticsNodeEntity n) ? n : null;
+        this.serverPlayer = null;
+        this.ae2Link = null;
 
-        this.filterContainer = new FilterItemsContainer();
         this.upgradeContainer = new UpgradeItemsContainer();
 
         if (this.node != null) {
@@ -95,17 +105,6 @@ public class NodeMenu extends AbstractContainerMenu {
     // Slot Layout
 
     private void layoutNodeSlots() {
-        // 3x3 Filter Grid
-        for (int r = 0; r < 3; r++) {
-            for (int c = 0; c < 3; c++) {
-                int index = r * 3 + c;
-                addSlot(new FilterSlot(filterContainer, index,
-                        FILTER_GRID_X + c * GRID_STEP,
-                        FILTER_GRID_Y + r * GRID_STEP));
-            }
-        }
-
-        // 2x2 Upgrade Grid
         for (int r = 0; r < 2; r++) {
             for (int c = 0; c < 2; c++) {
                 int index = r * 2 + c;
@@ -131,6 +130,11 @@ public class NodeMenu extends AbstractContainerMenu {
 
     public LogisticsNodeEntity getNode() {
         return node;
+    }
+
+    @Nullable
+    public GlobalPos getAE2Link() {
+        return ae2Link;
     }
 
     public int getSelectedChannel() {
@@ -178,7 +182,9 @@ public class NodeMenu extends AbstractContainerMenu {
                     net.getId(),
                     net.getName(),
                     net.getNodeUuids().size(),
-                    false));
+                    false,
+                    net.getCreatedAt(),
+                    net.getColor()));
         }
 
         PacketDistributor.sendToPlayer(player, new SyncNetworkListPayload(entries));
@@ -191,6 +197,14 @@ public class NodeMenu extends AbstractContainerMenu {
     }
 
     @Override
+    public void removed(Player player) {
+        super.removed(player);
+        if (serverPlayer != null) {
+            ServerPayloadHandler.handleNodeMenuClosed(serverPlayer, node, ae2Link);
+        }
+    }
+
+    @Override
     public ItemStack quickMoveStack(Player player, int index) {
         Slot fromSlot = slots.get(index);
         if (fromSlot == null || !fromSlot.hasItem())
@@ -199,28 +213,30 @@ public class NodeMenu extends AbstractContainerMenu {
         ItemStack fromStack = fromSlot.getItem();
         ItemStack copy = fromStack.copy();
 
-        int nodeSlotCount = FILTER_SLOTS + UPGRADE_SLOTS;
+        int nodeSlotCount = UPGRADE_SLOTS;
 
         if (index < nodeSlotCount) {
-            if (!moveItemStackTo(fromStack, nodeSlotCount, slots.size(), true)) {
-                return ItemStack.EMPTY;
+            movingUpgrade = true;
+            try {
+                if (!moveItemStackTo(fromStack, nodeSlotCount, slots.size(), true)) {
+                    return ItemStack.EMPTY;
+                }
+            } finally {
+                movingUpgrade = false;
             }
         } else {
-            int targetStart;
-            int targetEnd;
-            if (fromStack.is(ModTags.FILTERS)) {
-                targetStart = 0;
-                targetEnd = FILTER_SLOTS;
-            } else if (fromStack.is(ModTags.UPGRADES)) {
-                targetStart = FILTER_SLOTS;
-                targetEnd = nodeSlotCount;
-            } else {
+            if (!fromStack.is(ModTags.UPGRADES)) {
                 return ItemStack.EMPTY;
             }
 
             ItemStack single = fromStack.copyWithCount(1);
-            if (!moveItemStackTo(single, targetStart, targetEnd, false)) {
-                return ItemStack.EMPTY;
+            movingUpgrade = true;
+            try {
+                if (!moveItemStackTo(single, 0, nodeSlotCount, false)) {
+                    return ItemStack.EMPTY;
+                }
+            } finally {
+                movingUpgrade = false;
             }
             fromStack.shrink(1);
             if (fromStack.isEmpty()) {
@@ -228,6 +244,7 @@ public class NodeMenu extends AbstractContainerMenu {
             } else {
                 fromSlot.setChanged();
             }
+            refreshUpgradeChannels();
             return ItemStack.EMPTY;
         }
 
@@ -237,28 +254,13 @@ public class NodeMenu extends AbstractContainerMenu {
             fromSlot.setChanged();
         }
 
+        refreshUpgradeChannels();
         return copy;
     }
 
-    private class FilterItemsContainer extends AbstractProxyContainer {
-        FilterItemsContainer() {
-            super(FILTER_SLOTS);
-        }
-
-        @Override
-        public ItemStack getItem(int slot) {
-            return (node != null) ? node.getChannel(selectedChannel).getFilterItem(slot) : ItemStack.EMPTY;
-        }
-
-        @Override
-        public void setItem(int slot, ItemStack stack) {
-            if (node != null) {
-                node.getChannel(selectedChannel).setFilterItem(slot, stack.copyWithCount(1));
-                markDirty();
-                if (node.level() instanceof ServerLevel) {
-                    ServerPayloadHandler.propagateToLabelGroup(node, selectedChannel);
-                }
-            }
+    private void refreshUpgradeChannels() {
+        if (serverPlayer != null) {
+            ServerPayloadHandler.handleNodeUpgradeChanged(node);
         }
     }
 
@@ -275,8 +277,14 @@ public class NodeMenu extends AbstractContainerMenu {
         @Override
         public void setItem(int slot, ItemStack stack) {
             if (node != null) {
+                ItemStack previous = node.getUpgradeItem(slot);
+                boolean changed = previous.isEmpty() != stack.isEmpty()
+                        || (!previous.isEmpty() && !ItemStack.isSameItemSameComponents(previous, stack));
                 node.setUpgradeItem(slot, stack);
                 markDirty();
+                if (changed && !movingUpgrade) {
+                    refreshUpgradeChannels();
+                }
             }
         }
     }
@@ -323,27 +331,6 @@ public class NodeMenu extends AbstractContainerMenu {
 
         @Override
         public void clearContent() {
-        }
-    }
-
-    private class FilterSlot extends Slot {
-        FilterSlot(Container c, int i, int x, int y) {
-            super(c, i, x, y);
-        }
-
-        @Override
-        public boolean isActive() {
-            return nodeSlotsActive;
-        }
-
-        @Override
-        public boolean mayPlace(ItemStack stack) {
-            return !stack.isEmpty() && stack.is(ModTags.FILTERS);
-        }
-
-        @Override
-        public int getMaxStackSize() {
-            return 1;
         }
     }
 

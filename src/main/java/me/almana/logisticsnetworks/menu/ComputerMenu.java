@@ -1,12 +1,15 @@
 package me.almana.logisticsnetworks.menu;
 
+import me.almana.logisticsnetworks.Config;
 import me.almana.logisticsnetworks.block.ComputerBlockEntity;
 import me.almana.logisticsnetworks.data.LogisticsNetwork;
 import me.almana.logisticsnetworks.data.NetworkRegistry;
+import me.almana.logisticsnetworks.data.NodeClipboardConfig;
 import me.almana.logisticsnetworks.item.WrenchItem;
 import me.almana.logisticsnetworks.network.SyncNetworkListPayload;
 import me.almana.logisticsnetworks.registration.Registration;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -102,21 +105,23 @@ public class ComputerMenu extends AbstractContainerMenu {
         ComputerBlockEntity computer = getComputer(level);
         Set<UUID> starredNetworks = computer != null ? computer.getStarredNetworks() : Set.of();
 
-        LOGGER.debug("Player {} UUID: {}", player.getName().getString(), player.getUUID());
-        LOGGER.debug("Found {} networks for player", networks.size());
+        if (Config.debugMode) LOGGER.debug("Player {} UUID: {}", player.getName().getString(), player.getUUID());
+        if (Config.debugMode) LOGGER.debug("Found {} networks for player", networks.size());
 
         List<SyncNetworkListPayload.NetworkEntry> entries = new ArrayList<>();
         for (LogisticsNetwork net : networks) {
-            LOGGER.debug("  Network: {} (ID: {}, Nodes: {}, Owner: {})",
+            if (Config.debugMode) LOGGER.debug("  Network: {} (ID: {}, Nodes: {}, Owner: {})",
                     net.getName(), net.getId(), net.getNodeUuids().size(), net.getOwnerUuid());
             entries.add(new SyncNetworkListPayload.NetworkEntry(
                     net.getId(),
                     net.getName(),
                     net.getNodeUuids().size(),
-                    starredNetworks.contains(net.getId())));
+                    starredNetworks.contains(net.getId()),
+                    net.getCreatedAt(),
+                    net.getColor()));
         }
 
-        LOGGER.debug("Sending {} network entries to client", entries.size());
+        if (Config.debugMode) LOGGER.debug("Sending {} network entries to client", entries.size());
         PacketDistributor.sendToPlayer(player, new SyncNetworkListPayload(entries));
     }
 
@@ -153,6 +158,20 @@ public class ComputerMenu extends AbstractContainerMenu {
 
     public void setWrenchSlotActive(boolean active) {
         this.wrenchSlotActive = active;
+    }
+
+    public boolean hasWrench() {
+        return !wrenchStack.isEmpty() && wrenchStack.getItem() instanceof WrenchItem;
+    }
+
+    public boolean setWrenchClipboard(NodeClipboardConfig config, HolderLookup.Provider provider) {
+        if (!hasWrench() || config == null) {
+            return false;
+        }
+        WrenchItem.setClipboard(wrenchStack, config, provider);
+        wrenchContainer.setChanged();
+        broadcastChanges();
+        return true;
     }
 
     public BlockPos getComputerPos() {

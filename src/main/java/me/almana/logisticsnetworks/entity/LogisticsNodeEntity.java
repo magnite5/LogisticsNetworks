@@ -51,6 +51,7 @@ public class LogisticsNodeEntity extends Entity {
     private static final String KEY_OWNER_UUID = "OwnerUUID";
     private static final String KEY_NODE_LABEL = "NodeLabel";
     private static final String KEY_HIGHLIGHTED = "Highlighted";
+    private static final String KEY_NETWORK_COLOR = "NetworkColor";
 
     private static final EntityDataAccessor<BlockPos> ATTACHED_POS = SynchedEntityData
             .defineId(LogisticsNodeEntity.class, EntityDataSerializers.BLOCK_POS);
@@ -68,12 +69,13 @@ public class LogisticsNodeEntity extends Entity {
             .defineId(LogisticsNodeEntity.class, EntityDataSerializers.STRING);
     private static final EntityDataAccessor<Boolean> HIGHLIGHTED = SynchedEntityData
             .defineId(LogisticsNodeEntity.class, EntityDataSerializers.BOOLEAN);
+    private static final EntityDataAccessor<Integer> NETWORK_COLOR = SynchedEntityData
+            .defineId(LogisticsNodeEntity.class, EntityDataSerializers.INT);
 
     private final ChannelData[] channels = new ChannelData[CHANNEL_COUNT];
     private final ItemStack[] upgradeItems = new ItemStack[UPGRADE_SLOT_COUNT];
 
     private final long[] channelCooldowns = new long[CHANNEL_COUNT];
-    private final int[] roundRobinIndex = new int[CHANNEL_COUNT];
     private final float[] backoffTicks = new float[CHANNEL_COUNT];
 
     public LogisticsNodeEntity(EntityType<LogisticsNodeEntity> entityType, Level level) {
@@ -104,6 +106,7 @@ public class LogisticsNodeEntity extends Entity {
         builder.define(OWNER_UUID, "");
         builder.define(NODE_LABEL, "");
         builder.define(HIGHLIGHTED, false);
+        builder.define(NETWORK_COLOR, me.almana.logisticsnetworks.data.NetworkColors.DEFAULT);
     }
 
     @Override
@@ -118,6 +121,7 @@ public class LogisticsNodeEntity extends Entity {
         setOwnerUUID(parseOptionalUuid(input.getStringOr(KEY_OWNER_UUID, "")));
         setNodeLabel(input.getStringOr(KEY_NODE_LABEL, ""));
         setHighlighted(input.getBooleanOr(KEY_HIGHLIGHTED, false));
+        setNetworkColor(input.getIntOr(KEY_NETWORK_COLOR, me.almana.logisticsnetworks.data.NetworkColors.DEFAULT));
 
         ValueInput channelsInput = input.childOrEmpty(KEY_CHANNELS);
         for (int i = 0; i < CHANNEL_COUNT; i++) {
@@ -158,6 +162,7 @@ public class LogisticsNodeEntity extends Entity {
             output.putString(KEY_NODE_LABEL, label);
         }
         output.putBoolean(KEY_HIGHLIGHTED, isHighlighted());
+        output.putInt(KEY_NETWORK_COLOR, getNetworkColor());
 
         ValueOutput channelsOutput = output.child(KEY_CHANNELS);
         for (int i = 0; i < CHANNEL_COUNT; i++) {
@@ -227,7 +232,7 @@ public class LogisticsNodeEntity extends Entity {
 
     @Override
     public void kill(ServerLevel level) {
-        LOGGER.warn(
+        if (Config.debugMode) LOGGER.warn(
                 "Attempt to kill LogisticsNodeEntity ignored. Please use '/logisticsnetworks removeNodes' or '/ln removeNodes' instead to safely remove nodes.");
     }
 
@@ -274,6 +279,7 @@ public class LogisticsNodeEntity extends Entity {
         entityData.set(NETWORK_ID, networkId == null ? "" : networkId.toString());
         if (networkId == null) {
             setNetworkName("");
+            setNetworkColor(me.almana.logisticsnetworks.data.NetworkColors.DEFAULT);
         }
     }
 
@@ -283,6 +289,14 @@ public class LogisticsNodeEntity extends Entity {
 
     public void setNetworkName(@Nullable String networkName) {
         entityData.set(NETWORK_NAME, networkName == null ? "" : networkName);
+    }
+
+    public int getNetworkColor() {
+        return entityData.get(NETWORK_COLOR);
+    }
+
+    public void setNetworkColor(int color) {
+        entityData.set(NETWORK_COLOR, me.almana.logisticsnetworks.data.NetworkColors.mask(color));
     }
 
     public boolean isRenderVisible() {
@@ -364,22 +378,6 @@ public class LogisticsNodeEntity extends Entity {
         channelCooldowns[index] = time;
     }
 
-    public int getRoundRobinIndex(int channelIndex) {
-        return roundRobinIndex[channelIndex];
-    }
-
-    public void advanceRoundRobin(int channelIndex, int targetCount) {
-        if (targetCount > 0) {
-            roundRobinIndex[channelIndex] = (roundRobinIndex[channelIndex] + 1) % targetCount;
-        }
-    }
-
-    public void advanceRoundRobin(int channelIndex, int targetCount, int steps) {
-        if (targetCount > 0 && steps > 0) {
-            roundRobinIndex[channelIndex] = (roundRobinIndex[channelIndex] + steps) % targetCount;
-        }
-    }
-
     public float getBackoffTicks(int channelIndex) {
         return backoffTicks[channelIndex];
     }
@@ -402,17 +400,10 @@ public class LogisticsNodeEntity extends Entity {
     }
 
     public void dropFilters() {
-        if (!(level() instanceof ServerLevel serverLevel)) {
-            return;
-        }
         for (int channelIndex = 0; channelIndex < CHANNEL_COUNT; channelIndex++) {
             ChannelData channel = channels[channelIndex];
             for (int slot = 0; slot < ChannelData.FILTER_SIZE; slot++) {
-                ItemStack stack = channel.getFilterItem(slot);
-                if (!stack.isEmpty()) {
-                    spawnAtLocation(serverLevel, stack.copy());
-                    channel.setFilterItem(slot, ItemStack.EMPTY);
-                }
+                channel.setFilterItem(slot, ItemStack.EMPTY);
             }
         }
     }
